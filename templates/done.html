@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Video Complete</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1000px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #111;
+      color: #eee;
+    }
+
+    video {
+      width: 420px;
+      max-width: 100%;
+      display: block;
+      margin: 20px 0;
+      border-radius: 8px;
+    }
+
+    a {
+      color: #9cf;
+    }
+
+    .result-card {
+      border-top: 1px solid #333;
+      padding: 20px 0;
+    }
+
+    .prompt {
+      background: #1c1c1c;
+      border: 1px solid #333;
+      padding: 12px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      color: #ccc;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Video Complete</h1>
+
+  {% for result in results %}
+    <div class="result-card">
+      <h2>Batch Item {{ result.index }}</h2>
+
+      <video controls src="/outputs/{{ result.filename }}"></video>
+
+      <p>Saved locally as: {{ result.filename }}</p>
+
+      <p><a href="/outputs/{{ result.filename }}">Open file</a></p>
+
+      <div class="prompt">{{ result.prompt }}</div>
+    </div>
+  {% endfor %}
+
+  <p><a href="/">Back to generator</a></p>
+</body>
+</html>

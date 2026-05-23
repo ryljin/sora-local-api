@@ -1,0 +1,492 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ video.filename }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1100px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #111;
+      color: #eee;
+    }
+
+    a {
+      color: #9cf;
+    }
+
+    textarea, select, input, button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      box-sizing: border-box;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #1c1c1c;
+      color: #eee;
+    }
+
+    textarea {
+      min-height: 220px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: bold;
+      background: #eee;
+      color: #111;
+    }
+
+    button.secondary {
+      background: #2a2a2a;
+      color: #eee;
+    }
+
+    .panel {
+      background: #161616;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 18px;
+      margin-top: 20px;
+    }
+
+    .main-video {
+      width: 100%;
+      max-height: 720px;
+      background: #000;
+      border-radius: 10px;
+      display: block;
+    }
+
+    .meta {
+      color: #aaa;
+      font-size: 14px;
+      margin-top: 8px;
+      line-height: 1.4;
+    }
+
+    .prompt-box {
+      white-space: pre-wrap;
+      background: #1c1c1c;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 12px;
+      color: #ccc;
+      line-height: 1.45;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    .two-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .progress-shell {
+      height: 14px;
+      background: #252525;
+      border: 1px solid #444;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #d8eaff;
+    }
+
+    .job-text {
+      white-space: pre-wrap;
+      color: #ccc;
+      font-size: 14px;
+      line-height: 1.4;
+      max-height: 130px;
+      overflow: auto;
+      background: #1c1c1c;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .toolbar button {
+      width: auto;
+      margin-top: 0;
+    }
+
+    .section-heading-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .section-heading-row h2 {
+      margin: 0;
+    }
+
+    .copy-button {
+      width: auto;
+      margin-top: 0;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: #242424;
+      color: #eee;
+      border: 1px solid #444;
+      font-size: 13px;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+
+    .copy-button:hover {
+      background: #2e2e2e;
+      border-color: #777;
+    }
+
+    .copy-button.copied {
+      background: #d8eaff;
+      border-color: #d8eaff;
+      color: #07101c;
+    }
+
+    @media (max-width: 900px) {
+      .two-row,
+      .row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <a href="/">Back to gallery</a>
+    <button type="button" id="pinButton" class="secondary" onclick="togglePin()">{{ 'Unpin video' if video.pinned else 'Pin video' }}</button>
+  </div>
+
+  <h1>{{ video.filename }}</h1>
+
+  <video
+    class="main-video"
+    controls
+    autoplay
+    muted
+    playsinline
+    preload="metadata"
+    src="{{ url_for('outputs', filename=video.filename) }}">
+  </video>
+
+  <div class="panel">
+    <div class="section-heading-row">
+      <h2>Prompt</h2>
+      <button type="button" id="copyPromptButton" class="copy-button" onclick="copyPrompt()">Copy prompt</button>
+    </div>
+    <div class="prompt-box" id="promptBox">{{ video.prompt or "No prompt metadata found." }}</div>
+
+    <div class="meta">Video ID: {{ video.video_id or "Unknown" }}</div>
+    <div class="meta">Model: {{ video.model }}</div>
+    <div class="meta">Duration: {{ video.seconds }} seconds</div>
+    <div class="meta">Size: {{ video.size }}</div>
+    <div class="meta">Pinned: {{ 'yes' if video.pinned else 'no' }}</div>
+
+    {% if video.batch_id %}
+      <div class="meta">OpenAI Batch ID: {{ video.batch_id }}</div>
+      <div class="meta">Batch item: {{ video.batch_custom_id }}</div>
+    {% endif %}
+
+    {% if video.source_video_id %}
+      <div class="meta">
+        {{ video.source_mode|capitalize }} source:
+        {% if video.source_filename %}
+          <a href="{{ url_for('video_detail', filename=video.source_filename) }}">{{ video.source_filename }}</a>
+        {% else %}
+          {{ video.source_video_id }}
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="two-row">
+    <div class="panel">
+      <h2>Remix This Video</h2>
+
+      <label>Remix Prompt</label>
+      <textarea id="remixPrompt">{{ video.prompt }}</textarea>
+
+      <div class="row">
+        <div>
+          <label>Model</label>
+          <select id="remixModel">
+            <option value="sora-2" {% if video.model == "sora-2" %}selected{% endif %}>sora-2</option>
+            <option value="sora-2-pro" {% if video.model == "sora-2-pro" %}selected{% endif %}>sora-2-pro</option>
+          </select>
+        </div>
+
+        <div>
+          <label>Duration</label>
+          <input id="remixSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}">
+        </div>
+
+        <div>
+          <label>Size</label>
+          <select id="remixSize">
+            <option value="720x1280" {% if video.size == "720x1280" %}selected{% endif %}>720x1280 vertical</option>
+            <option value="1280x720" {% if video.size == "1280x720" %}selected{% endif %}>1280x720 horizontal</option>
+            <option value="1024x1792" {% if video.size == "1024x1792" %}selected{% endif %}>1024x1792 vertical</option>
+            <option value="1792x1024" {% if video.size == "1792x1024" %}selected{% endif %}>1792x1024 horizontal</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="button" onclick="startVideoAction('remix')" style="margin-top:18px;">Start Remix</button>
+    </div>
+
+    <div class="panel">
+      <h2>Extend This Video</h2>
+
+      <label>Continuation Prompt</label>
+      <textarea id="extendPrompt">Continue the same scene naturally, preserving the same camera style, lighting, characters, and motion continuity.</textarea>
+
+      <div class="row">
+        <div>
+          <label>Model</label>
+          <select id="extendModel">
+            <option value="sora-2" {% if video.model == "sora-2" %}selected{% endif %}>sora-2</option>
+            <option value="sora-2-pro" {% if video.model == "sora-2-pro" %}selected{% endif %}>sora-2-pro</option>
+          </select>
+        </div>
+
+        <div>
+          <label>Added Seconds</label>
+          <input id="extendSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}">
+        </div>
+
+        <div>
+          <label>Size</label>
+          <select id="extendSize">
+            <option value="720x1280" {% if video.size == "720x1280" %}selected{% endif %}>720x1280 vertical</option>
+            <option value="1280x720" {% if video.size == "1280x720" %}selected{% endif %}>1280x720 horizontal</option>
+            <option value="1024x1792" {% if video.size == "1024x1792" %}selected{% endif %}>1024x1792 vertical</option>
+            <option value="1792x1024" {% if video.size == "1792x1024" %}selected{% endif %}>1792x1024 horizontal</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="button" onclick="startVideoAction('extend')" style="margin-top:18px;">Start Extend</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Job</h2>
+    <div id="jobStatus" class="meta">No job started.</div>
+    <div class="progress-shell">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div id="jobResult"></div>
+  </div>
+
+  <script>
+    const sourceVideoId = {{ (video.video_id or "")|tojson }};
+    const sourceFilename = {{ video.filename|tojson }};
+    const currentPrompt = {{ (video.prompt or "")|tojson }};
+    let currentPinned = {{ 'true' if video.pinned else 'false' }};
+
+    function outputUrl(filename) {
+      return `/outputs/${encodeURIComponent(filename)}`;
+    }
+
+    function detailUrl(filename) {
+      return `/video/${encodeURIComponent(filename)}`;
+    }
+
+    async function copyPrompt() {
+      const button = document.getElementById("copyPromptButton");
+      const text = currentPrompt || document.getElementById("promptBox").textContent || "";
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const fallback = document.createElement("textarea");
+          fallback.value = text;
+          fallback.setAttribute("readonly", "");
+          fallback.style.position = "fixed";
+          fallback.style.left = "-9999px";
+          document.body.appendChild(fallback);
+          fallback.select();
+          document.execCommand("copy");
+          document.body.removeChild(fallback);
+        }
+
+        button.textContent = "Copied";
+        button.classList.add("copied");
+
+        setTimeout(() => {
+          button.textContent = "Copy prompt";
+          button.classList.remove("copied");
+        }, 1200);
+      } catch (error) {
+        button.textContent = "Copy failed";
+        setTimeout(() => {
+          button.textContent = "Copy prompt";
+        }, 1400);
+      }
+    }
+
+    async function togglePin() {
+      const response = await fetch("/api/pin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ filename: sourceFilename, pinned: !currentPinned })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to update pin.");
+        return;
+      }
+
+      currentPinned = data.pinned;
+      document.getElementById("pinButton").textContent = currentPinned ? "Unpin video" : "Pin video";
+    }
+
+    async function startVideoAction(mode) {
+      const promptField = mode === "extend" ? "extendPrompt" : "remixPrompt";
+      const modelField = mode === "extend" ? "extendModel" : "remixModel";
+      const secondsField = mode === "extend" ? "extendSeconds" : "remixSeconds";
+      const sizeField = mode === "extend" ? "extendSize" : "remixSize";
+
+      const prompt = document.getElementById(promptField).value.trim();
+
+      if (!prompt) {
+        alert(`${mode} prompt is empty.`);
+        return;
+      }
+
+      if (!sourceVideoId) {
+        alert("This video does not have a usable source video ID in its metadata.");
+        return;
+      }
+
+      const item = {
+        mode: mode,
+        source_video_id: sourceVideoId,
+        source_filename: sourceFilename,
+        prompt: prompt,
+        model: document.getElementById(modelField).value,
+        seconds: document.getElementById(secondsField).value,
+        size: document.getElementById(sizeField).value
+      };
+
+      const response = await fetch("/api/start", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ items: [item] })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || `Failed to start ${mode}.`);
+        return;
+      }
+
+      pollJob(data.job_id);
+    }
+
+    async function pollJob(jobId) {
+      while (true) {
+        const response = await fetch(`/api/job/${jobId}`);
+        const job = await response.json();
+
+        if (!response.ok) {
+          document.getElementById("jobStatus").textContent = job.error || "Job lookup failed.";
+          return;
+        }
+
+        renderJob(job);
+
+        if (job.status === "completed" || job.status === "failed") {
+          return;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+
+    function renderJob(job) {
+      const item = job.items[0];
+      const status = document.getElementById("jobStatus");
+      const bar = document.getElementById("progressBar");
+      const result = document.getElementById("jobResult");
+
+      status.textContent = `Status: ${item.status}`;
+      bar.style.width = `${item.progress || 0}%`;
+
+      if (item.error) {
+        result.innerHTML = "";
+
+        const error = document.createElement("p");
+        error.style.color = "#ffb3b3";
+        error.textContent = item.error;
+
+        result.appendChild(error);
+        return;
+      }
+
+      if (item.filename) {
+        result.innerHTML = "";
+
+        const detailLink = document.createElement("p");
+        const detailAnchor = document.createElement("a");
+        detailAnchor.href = detailUrl(item.filename);
+        detailAnchor.textContent = `Open ${item.mode} detail page`;
+        detailLink.appendChild(detailAnchor);
+
+        const sourceLink = document.createElement("p");
+        const sourceAnchor = document.createElement("a");
+        sourceAnchor.href = detailUrl(sourceFilename);
+        sourceAnchor.textContent = `Original source: ${sourceFilename}`;
+        sourceLink.appendChild(sourceAnchor);
+
+        const preview = document.createElement("video");
+        preview.className = "main-video";
+        preview.controls = true;
+        preview.preload = "metadata";
+        preview.src = outputUrl(item.filename);
+
+        const prompt = document.createElement("div");
+        prompt.className = "job-text";
+        prompt.textContent = item.prompt;
+
+        result.appendChild(detailLink);
+        result.appendChild(sourceLink);
+        result.appendChild(preview);
+        result.appendChild(prompt);
+      }
+    }
+  </script>
+</body>
+</html>

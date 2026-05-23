@@ -1,0 +1,851 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sora Local UI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1300px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #111;
+      color: #eee;
+    }
+
+    textarea, select, input, button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      box-sizing: border-box;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #1c1c1c;
+      color: #eee;
+    }
+
+    textarea {
+      min-height: 520px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: bold;
+      background: #eee;
+      color: #111;
+    }
+
+    button.secondary {
+      background: #2a2a2a;
+      color: #eee;
+    }
+
+    button.danger {
+      background: #4a1717;
+      color: #ffd6d6;
+      border-color: #8a3333;
+    }
+
+    label {
+      display: block;
+      margin-top: 16px;
+      font-weight: bold;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .panel {
+      background: #161616;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 18px;
+    }
+
+    .note, .meta {
+      color: #aaa;
+      font-size: 14px;
+      line-height: 1.4;
+      margin-top: 6px;
+    }
+
+    .duration-row,
+    .button-row,
+    .queue-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .queue-list,
+    .job-list {
+      margin-top: 10px;
+      max-height: 520px;
+      overflow: auto;
+      border-top: 1px solid #333;
+    }
+
+    .queue-item,
+    .job-item {
+      padding: 14px 0;
+      border-bottom: 1px solid #333;
+    }
+
+    .queue-text,
+    .job-text {
+      white-space: pre-wrap;
+      color: #ccc;
+      font-size: 14px;
+      line-height: 1.4;
+      max-height: 130px;
+      overflow: auto;
+      background: #1c1c1c;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .progress-shell {
+      height: 14px;
+      background: #252525;
+      border: 1px solid #444;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #d8eaff;
+    }
+
+    .send-batch {
+      margin-top: 18px;
+      background: #d8eaff;
+      color: #07101c;
+    }
+
+    .outputs-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 18px;
+    }
+
+    .video-card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 12px;
+      background: #161616;
+      min-width: 0;
+      position: relative;
+    }
+
+    .video-card.pinned {
+      border-color: #d8eaff;
+      box-shadow: 0 0 0 1px rgba(216, 234, 255, 0.2);
+    }
+
+    .video-card:hover {
+      border-color: #777;
+      background: #1a1a1a;
+    }
+
+    .pin-button {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: auto;
+      margin: 0;
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #eee;
+      border: 1px solid #555;
+      font-size: 13px;
+      z-index: 2;
+    }
+
+    .pin-button.is-pinned {
+      background: #d8eaff;
+      color: #07101c;
+      border-color: #d8eaff;
+    }
+
+    .video-title {
+      font-size: 13px;
+      color: #ddd;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 10px;
+      padding-right: 54px;
+    }
+
+    .thumb-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    .thumb-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+      display: block;
+      pointer-events: none;
+    }
+
+    .new-badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: rgba(216, 234, 255, 0.94);
+      color: #07101c;
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      font-size: 15px;
+      font-weight: bold;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .prompt-preview {
+      color: #aaa;
+      font-size: 13px;
+      line-height: 1.35;
+      margin-top: 8px;
+      max-height: 54px;
+      overflow: hidden;
+    }
+
+    .source-link {
+      display: inline-block;
+      color: #9cf;
+      margin-top: 6px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Sora Local UI</h1>
+
+  <div class="layout">
+    <div class="panel">
+      <label>Prompt</label>
+      <textarea id="prompt"></textarea>
+
+      <div class="button-row">
+        <button type="button" onclick="generateSingle()">Generate Single</button>
+        <button type="button" class="secondary" onclick="addToBatch()">Add to Batch</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <label>Model</label>
+      <select id="model">
+        <option value="sora-2">sora-2</option>
+        <option value="sora-2-pro">sora-2-pro</option>
+      </select>
+
+      <label>Duration</label>
+      <div class="duration-row">
+        <select id="preset_seconds">
+          <option value="4">4 seconds</option>
+          <option value="8">8 seconds</option>
+          <option value="12">12 seconds</option>
+          <option value="16">16 seconds</option>
+          <option value="20">20 seconds</option>
+        </select>
+
+        <input id="custom_seconds" type="number" min="1" max="20" step="1" placeholder="Override seconds">
+      </div>
+      <div class="note">Custom duration overrides preset unless empty.</div>
+
+      <label>Size</label>
+      <select id="size">
+        <option value="720x1280">720x1280 vertical</option>
+        <option value="1280x720">1280x720 horizontal</option>
+        <option value="1024x1792">1024x1792 vertical</option>
+        <option value="1792x1024">1792x1024 horizontal</option>
+      </select>
+
+      <hr style="border:0;border-top:1px solid #333;margin:22px 0;">
+
+      <h2>Queued Batch <span class="note" id="queueCount">0 queued</span></h2>
+      <div class="note">Send Batch uses OpenAI Batch API for discounted offline video generation. It can take up to 24 hours and currently supports normal generate items, not remix/extend.</div>
+      <div class="queue-list" id="queueList"></div>
+
+      <button type="button" class="send-batch" onclick="sendBatch()">Send Batch with OpenAI Batch API</button>
+      <button type="button" class="danger" onclick="clearBatch()">Clear Batch</button>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:24px;">
+    <h2>Active / Recent Jobs</h2>
+    <div class="job-list" id="jobList">
+      <p class="note">No jobs yet.</p>
+    </div>
+  </div>
+
+  <h2>Local Outputs</h2>
+
+  <div class="outputs-grid" id="outputsGrid">
+    {% for video in videos %}
+      <a class="video-card {% if video.pinned %}pinned{% endif %}" href="{{ url_for('video_detail', filename=video.filename) }}" data-filename="{{ video.filename }}">
+        <button type="button" class="pin-button {% if video.pinned %}is-pinned{% endif %}" onclick='togglePin(event, {{ video.filename|tojson }}, {{ 'false' if video.pinned else 'true' }})'>
+          {{ 'Pinned' if video.pinned else 'Pin' }}
+        </button>
+
+        <div class="video-title" title="{{ video.filename }}">{{ video.filename }}</div>
+
+        <div class="thumb-wrap">
+          {% if video.is_new %}
+            <div class="new-badge" title="New, not viewed yet">●</div>
+          {% endif %}
+
+          <video
+            class="thumb-video"
+            muted
+            preload="metadata"
+            src="{{ url_for('outputs', filename=video.filename) }}#t=0.1">
+          </video>
+        </div>
+
+        <div class="meta">{{ video.seconds }}s | {{ video.size }}</div>
+
+        {% if video.batch_id %}
+          <div class="meta">OpenAI Batch</div>
+        {% endif %}
+
+        {% if video.source_filename %}
+          <div class="meta">
+            {{ video.source_mode|capitalize }} of {{ video.source_filename }}
+          </div>
+        {% endif %}
+
+        {% if video.prompt %}
+          <div class="prompt-preview">{{ video.prompt }}</div>
+        {% endif %}
+      </a>
+    {% endfor %}
+  </div>
+
+  <script>
+    let batchQueue = [];
+    let jobsPollTimer = null;
+    let lastCompletedOutputCount = null;
+
+    function getCurrentSettings() {
+      const customSeconds = document.getElementById("custom_seconds").value.trim();
+      const presetSeconds = document.getElementById("preset_seconds").value;
+
+      return {
+        model: document.getElementById("model").value,
+        seconds: customSeconds ? customSeconds : presetSeconds,
+        size: document.getElementById("size").value
+      };
+    }
+
+    function getCurrentItem() {
+      const prompt = document.getElementById("prompt").value.trim();
+      const settings = getCurrentSettings();
+
+      return {
+        prompt,
+        model: settings.model,
+        seconds: settings.seconds,
+        size: settings.size,
+        mode: "generate",
+        source_video_id: null,
+        source_filename: null
+      };
+    }
+
+    function saveQueueToLocalStorage() {
+      localStorage.setItem("sora_batch_queue", JSON.stringify(batchQueue));
+    }
+
+    function loadQueueFromLocalStorage() {
+      const saved = localStorage.getItem("sora_batch_queue");
+
+      if (!saved) {
+        batchQueue = [];
+        return;
+      }
+
+      try {
+        batchQueue = JSON.parse(saved);
+        if (!Array.isArray(batchQueue)) {
+          batchQueue = [];
+        }
+      } catch {
+        batchQueue = [];
+      }
+    }
+
+    function renderQueue() {
+      const queueList = document.getElementById("queueList");
+      const queueCount = document.getElementById("queueCount");
+
+      queueList.innerHTML = "";
+      queueCount.textContent = `${batchQueue.length} queued`;
+
+      if (batchQueue.length === 0) {
+        queueList.innerHTML = `<p class="note">No queued prompts yet.</p>`;
+        return;
+      }
+
+      batchQueue.forEach((item, index) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "queue-item";
+
+        const title = document.createElement("div");
+        title.textContent = `${formatMode(item.mode)} Item ${index + 1}`;
+        title.style.fontWeight = "bold";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent =
+          `${item.model} | ${item.seconds}s | ${item.size}` +
+          (item.source_filename ? ` | source: ${item.source_filename}` : "");
+
+        const text = document.createElement("div");
+        text.className = "queue-text";
+        text.textContent = item.prompt;
+
+        const actions = document.createElement("div");
+        actions.className = "queue-actions";
+
+        const editButton = document.createElement("button");
+        editButton.type = "button";
+        editButton.className = "secondary";
+        editButton.textContent = "Edit";
+        editButton.onclick = () => editBatchItem(index);
+
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "danger";
+        deleteButton.textContent = "Delete";
+        deleteButton.onclick = () => deleteBatchItem(index);
+
+        actions.appendChild(editButton);
+        actions.appendChild(deleteButton);
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(meta);
+        wrapper.appendChild(text);
+        wrapper.appendChild(actions);
+
+        queueList.appendChild(wrapper);
+      });
+    }
+
+    function addToBatch() {
+      const item = getCurrentItem();
+
+      if (!item.prompt) {
+        alert("Prompt is empty.");
+        return;
+      }
+
+      batchQueue.push(item);
+      saveQueueToLocalStorage();
+      renderQueue();
+
+      document.getElementById("prompt").value = "";
+      document.getElementById("prompt").focus();
+    }
+
+    function editBatchItem(index) {
+      const item = batchQueue[index];
+
+      document.getElementById("prompt").value = item.prompt;
+      document.getElementById("model").value = item.model || "sora-2";
+      document.getElementById("size").value = item.size || "720x1280";
+
+      const preset = document.getElementById("preset_seconds");
+      const custom = document.getElementById("custom_seconds");
+      const presetValues = ["4", "8", "12", "16", "20"];
+
+      if (presetValues.includes(String(item.seconds))) {
+        preset.value = String(item.seconds);
+        custom.value = "";
+      } else {
+        custom.value = String(item.seconds);
+      }
+
+      batchQueue.splice(index, 1);
+      saveQueueToLocalStorage();
+      renderQueue();
+
+      document.getElementById("prompt").focus();
+    }
+
+    function deleteBatchItem(index) {
+      batchQueue.splice(index, 1);
+      saveQueueToLocalStorage();
+      renderQueue();
+    }
+
+    function clearBatch() {
+      if (batchQueue.length === 0) {
+        return;
+      }
+
+      if (!confirm("Clear all queued prompts?")) {
+        return;
+      }
+
+      batchQueue = [];
+      saveQueueToLocalStorage();
+      renderQueue();
+    }
+
+    async function startJob(items) {
+      const response = await fetch("/api/start", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ items })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to start job.");
+        return;
+      }
+
+      await loadJobs();
+      startJobsPolling();
+    }
+
+    async function startOpenAIBatch(items) {
+      const response = await fetch("/api/start-batch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ items })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to start OpenAI batch job.");
+        return false;
+      }
+
+      await loadJobs();
+      startJobsPolling();
+      return true;
+    }
+
+    function generateSingle() {
+      const item = getCurrentItem();
+
+      if (!item.prompt) {
+        alert("Prompt is empty.");
+        return;
+      }
+
+      startJob([item]);
+    }
+
+    async function sendBatch() {
+      if (batchQueue.length === 0) {
+        alert("Batch queue is empty.");
+        return;
+      }
+
+      const confirmed = confirm("Send this queue through OpenAI Batch API? This uses the discounted offline batch path and can take up to 24 hours.");
+      if (!confirmed) {
+        return;
+      }
+
+      const submitted = await startOpenAIBatch(batchQueue);
+
+      if (submitted) {
+        batchQueue = [];
+        saveQueueToLocalStorage();
+        renderQueue();
+      }
+    }
+
+    async function loadJobs() {
+      const response = await fetch("/api/jobs");
+      const data = await response.json();
+
+      renderJobs(data.jobs || []);
+
+      const hasUnfinished = (data.jobs || []).some(job => job.status !== "completed" && job.status !== "failed");
+      const completedOutputCount = (data.jobs || [])
+        .flatMap(job => job.items || [])
+        .filter(item => item.filename).length;
+
+      if (lastCompletedOutputCount === null) {
+        lastCompletedOutputCount = completedOutputCount;
+      } else if (completedOutputCount !== lastCompletedOutputCount) {
+        lastCompletedOutputCount = completedOutputCount;
+        refreshOutputs();
+      }
+
+      if (!hasUnfinished && jobsPollTimer) {
+        clearInterval(jobsPollTimer);
+        jobsPollTimer = null;
+      }
+    }
+
+    function startJobsPolling() {
+      if (jobsPollTimer) {
+        return;
+      }
+
+      jobsPollTimer = setInterval(loadJobs, 3000);
+    }
+
+    function renderJobs(jobs) {
+      const jobList = document.getElementById("jobList");
+      jobList.innerHTML = "";
+
+      if (jobs.length === 0) {
+        jobList.innerHTML = `<p class="note">No jobs yet.</p>`;
+        return;
+      }
+
+      jobs.forEach(job => {
+        const container = document.createElement("div");
+        container.className = "job-item";
+
+        const title = document.createElement("h3");
+        title.textContent = `${job.job_type === "openai_batch" ? "OpenAI Batch" : "Standard"} Job ${job.job_id}`;
+        container.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `Status: ${job.status} | Progress: ${job.progress || 0}% | Created: ${job.created_at || "unknown"}`;
+        container.appendChild(meta);
+
+        if (job.batch_id) {
+          const batchMeta = document.createElement("div");
+          batchMeta.className = "meta";
+          const counts = job.request_counts || {};
+          batchMeta.textContent = `Batch ID: ${job.batch_id} | Completed: ${counts.completed || 0}/${counts.total || 0} | Failed: ${counts.failed || 0}`;
+          container.appendChild(batchMeta);
+        }
+
+        if (job.error) {
+          const error = document.createElement("div");
+          error.style.color = "#ffb3b3";
+          error.textContent = job.error;
+          container.appendChild(error);
+        }
+
+        (job.items || []).forEach((item, index) => {
+          container.appendChild(renderJobItem(item, index));
+        });
+
+        jobList.appendChild(container);
+      });
+    }
+
+    function renderJobItem(item, index) {
+      const itemDiv = document.createElement("div");
+      itemDiv.className = "job-item";
+
+      const itemTitle = document.createElement("div");
+      itemTitle.style.fontWeight = "bold";
+      itemTitle.textContent = `Item ${index + 1}: ${item.status}`;
+
+      const itemMeta = document.createElement("div");
+      itemMeta.className = "meta";
+      itemMeta.textContent =
+        `${formatMode(item.mode)} | ${item.model} | ${item.seconds}s | ${item.size}`;
+
+      const progressShell = document.createElement("div");
+      progressShell.className = "progress-shell";
+
+      const progressBar = document.createElement("div");
+      progressBar.className = "progress-bar";
+      progressBar.style.width = `${item.progress || 0}%`;
+
+      progressShell.appendChild(progressBar);
+
+      const prompt = document.createElement("div");
+      prompt.className = "job-text";
+      prompt.textContent = item.prompt;
+
+      itemDiv.appendChild(itemTitle);
+      itemDiv.appendChild(itemMeta);
+
+      if (item.source_filename) {
+        const source = document.createElement("a");
+        source.className = "source-link";
+        source.href = `/video/${encodeURIComponent(item.source_filename)}`;
+        source.textContent = `Source: ${item.source_filename}`;
+        itemDiv.appendChild(source);
+      }
+
+      itemDiv.appendChild(progressShell);
+
+      if (item.filename) {
+        const link = document.createElement("p");
+        const a = document.createElement("a");
+        a.href = `/video/${encodeURIComponent(item.filename)}`;
+        a.style.color = "#9cf";
+        a.textContent = `Open ${formatMode(item.mode).toLowerCase()} detail page`;
+        link.appendChild(a);
+        itemDiv.appendChild(link);
+      }
+
+      if (item.error) {
+        const error = document.createElement("div");
+        error.style.color = "#ffb3b3";
+        error.textContent = item.error;
+        itemDiv.appendChild(error);
+      }
+
+      itemDiv.appendChild(prompt);
+      return itemDiv;
+    }
+
+    async function refreshOutputs() {
+      const response = await fetch("/api/videos");
+      const data = await response.json();
+      const grid = document.getElementById("outputsGrid");
+
+      grid.innerHTML = "";
+
+      data.videos.forEach(video => {
+        const card = document.createElement("a");
+        card.className = `video-card ${video.pinned ? "pinned" : ""}`;
+        card.href = `/video/${encodeURIComponent(video.filename)}`;
+        card.dataset.filename = video.filename;
+
+        const pinButton = document.createElement("button");
+        pinButton.type = "button";
+        pinButton.className = `pin-button ${video.pinned ? "is-pinned" : ""}`;
+        pinButton.textContent = video.pinned ? "Pinned" : "Pin";
+        pinButton.onclick = (event) => togglePin(event, video.filename, !video.pinned);
+
+        const title = document.createElement("div");
+        title.className = "video-title";
+        title.title = video.filename;
+        title.textContent = video.filename;
+
+        const thumbWrap = document.createElement("div");
+        thumbWrap.className = "thumb-wrap";
+
+        if (video.is_new) {
+          const badge = document.createElement("div");
+          badge.className = "new-badge";
+          badge.title = "New, not viewed yet";
+          badge.textContent = "●";
+          thumbWrap.appendChild(badge);
+        }
+
+        const vid = document.createElement("video");
+        vid.className = "thumb-video";
+        vid.muted = true;
+        vid.preload = "metadata";
+        vid.src = `/outputs/${encodeURIComponent(video.filename)}#t=0.1`;
+        thumbWrap.appendChild(vid);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${video.seconds}s | ${video.size}`;
+
+        card.appendChild(pinButton);
+        card.appendChild(title);
+        card.appendChild(thumbWrap);
+        card.appendChild(meta);
+
+        if (video.batch_id) {
+          const batchMeta = document.createElement("div");
+          batchMeta.className = "meta";
+          batchMeta.textContent = "OpenAI Batch";
+          card.appendChild(batchMeta);
+        }
+
+        if (video.source_filename) {
+          const sourceMeta = document.createElement("div");
+          sourceMeta.className = "meta";
+          sourceMeta.textContent = `${formatMode(video.source_mode)} of ${video.source_filename}`;
+          card.appendChild(sourceMeta);
+        }
+
+        if (video.prompt) {
+          const preview = document.createElement("div");
+          preview.className = "prompt-preview";
+          preview.textContent = video.prompt;
+          card.appendChild(preview);
+        }
+
+        grid.appendChild(card);
+      });
+    }
+
+    async function togglePin(event, filename, pinned) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const response = await fetch("/api/pin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ filename, pinned })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to update pin.");
+        return;
+      }
+
+      refreshOutputs();
+    }
+
+    function formatMode(mode) {
+      if (mode === "remix") {
+        return "Remix";
+      }
+
+      if (mode === "extend") {
+        return "Extend";
+      }
+
+      return "Generate";
+    }
+
+    loadQueueFromLocalStorage();
+    renderQueue();
+    loadJobs().then(startJobsPolling);
+  </script>
+</body>
+</html>
