@@ -68,6 +68,16 @@
       line-height: 1.4;
     }
 
+    .image-chip {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #223044;
+      color: #d8eaff;
+      font-size: 12px;
+    }
+
     .prompt-box {
       white-space: pre-wrap;
       background: #1c1c1c;
@@ -167,18 +177,144 @@
       color: #07101c;
     }
 
+
+
+    .budget-corner {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      width: 240px;
+      z-index: 50;
+      background: rgba(18, 24, 32, 0.96);
+      border: 1px solid #2f4155;
+      border-radius: 12px;
+      padding: 8px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(8px);
+    }
+
+    .budget-corner.collapsed {
+      width: auto;
+      min-width: 154px;
+      padding: 6px;
+    }
+
+    .budget-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .budget-toggle {
+      width: 100%;
+      margin-top: 0;
+      padding: 7px 9px;
+      border-radius: 999px;
+      background: #1c1c1c;
+      color: #eee;
+      border: 1px solid #40546a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+    }
+
+    .budget-toggle:hover {
+      background: #242a31;
+      border-color: #6d8197;
+    }
+
+    .budget-amount {
+      color: #d8eaff;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    .budget-body {
+      margin-top: 8px;
+    }
+
+    .budget-corner.collapsed .budget-body {
+      display: none;
+    }
+
+    .budget-corner .meta {
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .budget-corner label {
+      display: block;
+      margin-top: 8px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .budget-corner input {
+      margin-top: 5px;
+      padding: 7px 8px;
+      font-size: 13px;
+    }
+
+    .budget-inline {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 7px;
+    }
+
+    .small-button {
+      width: auto;
+      margin-top: 0;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: #2a2a2a;
+      color: #eee;
+      border: 1px solid #444;
+      font-size: 12px;
+    }
+
     @media (max-width: 900px) {
       .two-row,
       .row {
         grid-template-columns: 1fr;
       }
+
+      .budget-corner {
+        position: static;
+        width: auto;
+        margin-bottom: 18px;
+      }
     }
   </style>
 </head>
 <body>
+  <div class="budget-corner collapsed" id="budgetCorner">
+    <div class="budget-header">
+      <button type="button" class="budget-toggle" onclick="toggleBudgetPanel()">
+        <span>Budget</span>
+        <span class="budget-amount" id="budgetRemainingBadge">not set</span>
+      </button>
+    </div>
+    <div class="budget-body">
+      <div class="meta" id="budgetRemainingLine">Remaining: not set</div>
+      <label>Editable remaining</label>
+      <input id="budgetRemaining" type="number" min="0" step="0.01" placeholder="25.00" oninput="onBudgetInput()">
+      <div class="budget-inline">
+        <button type="button" class="small-button" onclick="loadBudget(false)">Reload</button>
+        <button type="button" class="small-button" onclick="saveBudgetOnly()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toolbar">
     <a href="/">Back to gallery</a>
     <button type="button" id="pinButton" class="secondary" onclick="togglePin()">{{ 'Unpin video' if video.pinned else 'Pin video' }}</button>
+    <button type="button" id="favoriteButton" class="secondary" onclick="toggleFavorite()">{{ 'Remove favorite' if video.favorite else 'Favorite video' }}</button>
+    <button type="button" id="archiveButton" class="secondary" onclick="toggleArchive()">{{ 'Unarchive video' if video.archived else 'Archive video' }}</button>
   </div>
 
   <h1>{{ video.filename }}</h1>
@@ -204,7 +340,9 @@
     <div class="meta">Model: {{ video.model }}</div>
     <div class="meta">Duration: {{ video.seconds }} seconds</div>
     <div class="meta">Size: {{ video.size }}</div>
-    <div class="meta">Pinned: {{ 'yes' if video.pinned else 'no' }}</div>
+    <div class="meta">Pinned: <span id="pinnedState">{{ 'yes' if video.pinned else 'no' }}</span></div>
+    <div class="meta">Favorite: <span id="favoriteState">{{ 'yes' if video.favorite else 'no' }}</span></div>
+    <div class="meta">Archived: <span id="archiveState">{{ 'yes' if video.archived else 'no' }}</span></div>
 
     {% if video.batch_id %}
       <div class="meta">OpenAI Batch ID: {{ video.batch_id }}</div>
@@ -233,7 +371,7 @@
       <div class="row">
         <div>
           <label>Model</label>
-          <select id="remixModel">
+          <select id="remixModel" onchange="updateActionCosts()">
             <option value="sora-2" {% if video.model == "sora-2" %}selected{% endif %}>sora-2</option>
             <option value="sora-2-pro" {% if video.model == "sora-2-pro" %}selected{% endif %}>sora-2-pro</option>
           </select>
@@ -241,12 +379,12 @@
 
         <div>
           <label>Duration</label>
-          <input id="remixSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}">
+          <input id="remixSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}" oninput="updateActionCosts()">
         </div>
 
         <div>
           <label>Size</label>
-          <select id="remixSize">
+          <select id="remixSize" onchange="updateActionCosts()">
             <option value="720x1280" {% if video.size == "720x1280" %}selected{% endif %}>720x1280 vertical</option>
             <option value="1280x720" {% if video.size == "1280x720" %}selected{% endif %}>1280x720 horizontal</option>
             <option value="1024x1792" {% if video.size == "1024x1792" %}selected{% endif %}>1024x1792 vertical</option>
@@ -255,7 +393,7 @@
         </div>
       </div>
 
-      <button type="button" onclick="startVideoAction('remix')" style="margin-top:18px;">Start Remix</button>
+      <button id="remixButton" type="button" onclick="startVideoAction('remix')" style="margin-top:18px;">Start Remix</button>
     </div>
 
     <div class="panel">
@@ -267,7 +405,7 @@
       <div class="row">
         <div>
           <label>Model</label>
-          <select id="extendModel">
+          <select id="extendModel" onchange="updateActionCosts()">
             <option value="sora-2" {% if video.model == "sora-2" %}selected{% endif %}>sora-2</option>
             <option value="sora-2-pro" {% if video.model == "sora-2-pro" %}selected{% endif %}>sora-2-pro</option>
           </select>
@@ -275,12 +413,12 @@
 
         <div>
           <label>Added Seconds</label>
-          <input id="extendSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}">
+          <input id="extendSeconds" type="number" min="1" max="20" step="1" value="{{ video.seconds }}" oninput="updateActionCosts()">
         </div>
 
         <div>
           <label>Size</label>
-          <select id="extendSize">
+          <select id="extendSize" onchange="updateActionCosts()">
             <option value="720x1280" {% if video.size == "720x1280" %}selected{% endif %}>720x1280 vertical</option>
             <option value="1280x720" {% if video.size == "1280x720" %}selected{% endif %}>1280x720 horizontal</option>
             <option value="1024x1792" {% if video.size == "1024x1792" %}selected{% endif %}>1024x1792 vertical</option>
@@ -289,7 +427,7 @@
         </div>
       </div>
 
-      <button type="button" onclick="startVideoAction('extend')" style="margin-top:18px;">Start Extend</button>
+      <button id="extendButton" type="button" onclick="startVideoAction('extend')" style="margin-top:18px;">Start Extend</button>
     </div>
   </div>
 
@@ -303,10 +441,20 @@
   </div>
 
   <script>
+    const PRICE_PER_SECOND = {
+      standard: {
+        "sora-2": { "720": 0.10, "1024": 0.10, "1080": 0.10 },
+        "sora-2-pro": { "720": 0.30, "1024": 0.50, "1080": 0.70 }
+      }
+    };
+
     const sourceVideoId = {{ (video.video_id or "")|tojson }};
     const sourceFilename = {{ video.filename|tojson }};
     const currentPrompt = {{ (video.prompt or "")|tojson }};
     let currentPinned = {{ 'true' if video.pinned else 'false' }};
+    let currentFavorite = {{ 'true' if video.favorite else 'false' }};
+    let currentArchived = {{ 'true' if video.archived else 'false' }};
+    const BUDGET_DRAFT_KEY = "sora_budget_remaining_draft";
 
     function outputUrl(filename) {
       return `/outputs/${encodeURIComponent(filename)}`;
@@ -315,6 +463,133 @@
     function detailUrl(filename) {
       return `/video/${encodeURIComponent(filename)}`;
     }
+
+    function resolutionTier(size) {
+      if (!size || !size.includes("x")) {
+        return "720";
+      }
+
+      const parts = size.split("x").map(value => parseInt(value, 10));
+      const longEdge = Math.max(parts[0] || 720, parts[1] || 720);
+
+      if (longEdge >= 1792) {
+        return "1024";
+      }
+
+      return "720";
+    }
+
+    function estimateItemCost(item) {
+      const model = item.model || "sora-2";
+      const seconds = Math.max(0, parseFloat(item.seconds || "0") || 0);
+      const tier = resolutionTier(item.size || "720x1280");
+      const modelPrices = PRICE_PER_SECOND.standard[model] || PRICE_PER_SECOND.standard["sora-2"];
+      const rate = modelPrices[tier] || modelPrices["720"] || 0;
+      return seconds * rate;
+    }
+
+    function money(value) {
+      return `$${Number(value || 0).toFixed(2)}`;
+    }
+
+    function getActionItem(mode) {
+      const promptField = mode === "extend" ? "extendPrompt" : "remixPrompt";
+      const modelField = mode === "extend" ? "extendModel" : "remixModel";
+      const secondsField = mode === "extend" ? "extendSeconds" : "remixSeconds";
+      const sizeField = mode === "extend" ? "extendSize" : "remixSize";
+
+      return {
+        mode: mode,
+        source_video_id: sourceVideoId,
+        source_filename: sourceFilename,
+        prompt: document.getElementById(promptField).value.trim(),
+        model: document.getElementById(modelField).value,
+        seconds: document.getElementById(secondsField).value,
+        size: document.getElementById(sizeField).value
+      };
+    }
+
+    function updateActionCosts() {
+      const remixButton = document.getElementById("remixButton");
+      const extendButton = document.getElementById("extendButton");
+
+      if (remixButton) {
+        remixButton.textContent = `Start Remix • ${money(estimateItemCost(getActionItem("remix")))}`;
+      }
+
+      if (extendButton) {
+        extendButton.textContent = `Start Extend • ${money(estimateItemCost(getActionItem("extend")))}`;
+      }
+    }
+
+    function getRemainingBudgetNumber() {
+      const value = parseFloat(document.getElementById("budgetRemaining").value);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function updateBudgetDisplay() {
+      const remaining = getRemainingBudgetNumber();
+      document.getElementById("budgetRemainingLine").textContent = remaining === null
+        ? "Remaining: not set"
+        : `Remaining: ${money(remaining)}`;
+
+      document.getElementById("budgetRemainingBadge").textContent = remaining === null
+        ? "not set"
+        : money(remaining);
+
+      updateActionCosts();
+    }
+
+    function toggleBudgetPanel() {
+      const corner = document.getElementById("budgetCorner");
+      corner.classList.toggle("collapsed");
+    }
+
+    function onBudgetInput() {
+      const field = document.getElementById("budgetRemaining");
+      localStorage.setItem(BUDGET_DRAFT_KEY, field.value || "");
+      updateBudgetDisplay();
+    }
+
+    async function loadBudget(useLocalDraft = true) {
+      const response = await fetch("/api/budget", { cache: "no-store" });
+      const data = await response.json();
+      const draft = localStorage.getItem(BUDGET_DRAFT_KEY);
+      const shouldUseDraft = useLocalDraft && draft !== null;
+
+      document.getElementById("budgetRemaining").value = shouldUseDraft ? draft : (data.remaining || "");
+      updateBudgetDisplay();
+    }
+
+    async function saveBudget(remaining) {
+      const response = await fetch("/api/budget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          remaining: remaining === null ? "" : Number(remaining).toFixed(2)
+        })
+      });
+
+      const data = await response.json();
+      document.getElementById("budgetRemaining").value = data.remaining || "";
+      localStorage.setItem(BUDGET_DRAFT_KEY, data.remaining || "");
+      updateBudgetDisplay();
+    }
+
+    async function saveBudgetOnly() {
+      await saveBudget(getRemainingBudgetNumber());
+    }
+
+    async function chargeBudget(amount) {
+      const remaining = getRemainingBudgetNumber();
+      if (remaining === null) {
+        await saveBudget(null);
+        return;
+      }
+
+      await saveBudget(Math.max(0, remaining - amount));
+    }
+
 
     async function copyPrompt() {
       const button = document.getElementById("copyPromptButton");
@@ -368,17 +643,55 @@
 
       currentPinned = data.pinned;
       document.getElementById("pinButton").textContent = currentPinned ? "Unpin video" : "Pin video";
+      document.getElementById("pinnedState").textContent = currentPinned ? "yes" : "no";
+    }
+
+    async function toggleFavorite() {
+      const response = await fetch("/api/favorite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ filename: sourceFilename, favorite: !currentFavorite })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to update favorite.");
+        return;
+      }
+
+      currentFavorite = data.favorite;
+      document.getElementById("favoriteButton").textContent = currentFavorite ? "Remove favorite" : "Favorite video";
+      document.getElementById("favoriteState").textContent = currentFavorite ? "yes" : "no";
+    }
+
+    async function toggleArchive() {
+      const response = await fetch("/api/archive", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ filename: sourceFilename, archived: !currentArchived })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to update archive.");
+        return;
+      }
+
+      currentArchived = data.archived;
+      document.getElementById("archiveButton").textContent = currentArchived ? "Unarchive video" : "Archive video";
+      document.getElementById("archiveState").textContent = currentArchived ? "yes" : "no";
     }
 
     async function startVideoAction(mode) {
-      const promptField = mode === "extend" ? "extendPrompt" : "remixPrompt";
-      const modelField = mode === "extend" ? "extendModel" : "remixModel";
-      const secondsField = mode === "extend" ? "extendSeconds" : "remixSeconds";
-      const sizeField = mode === "extend" ? "extendSize" : "remixSize";
+      const item = getActionItem(mode);
 
-      const prompt = document.getElementById(promptField).value.trim();
-
-      if (!prompt) {
+      if (!item.prompt) {
         alert(`${mode} prompt is empty.`);
         return;
       }
@@ -388,15 +701,7 @@
         return;
       }
 
-      const item = {
-        mode: mode,
-        source_video_id: sourceVideoId,
-        source_filename: sourceFilename,
-        prompt: prompt,
-        model: document.getElementById(modelField).value,
-        seconds: document.getElementById(secondsField).value,
-        size: document.getElementById(sizeField).value
-      };
+      const cost = estimateItemCost(item);
 
       const response = await fetch("/api/start", {
         method: "POST",
@@ -413,6 +718,7 @@
         return;
       }
 
+      await chargeBudget(cost);
       pollJob(data.job_id);
     }
 
@@ -487,6 +793,8 @@
         result.appendChild(prompt);
       }
     }
+    loadBudget();
+    updateActionCosts();
   </script>
 </body>
 </html>

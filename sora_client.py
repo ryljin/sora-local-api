@@ -168,6 +168,21 @@ def make_video_batch_jsonl(items: List[Dict[str, Any]], jsonl_path: Path):
                 "size": item.get("size", "720x1280"),
             }
 
+            input_reference_file_id = (item.get("input_reference_file_id") or "").strip()
+            input_reference_image_url = (item.get("input_reference_image_url") or "").strip()
+
+            # For OpenAI Batch, local uploads should be represented as a Files API
+            # file_id. JSONL batch requests cannot use multipart image uploads, and
+            # very large data URLs are unreliable/expensive to store in jobs.json.
+            if input_reference_file_id:
+                body["input_reference"] = {
+                    "file_id": input_reference_file_id,
+                }
+            elif input_reference_image_url:
+                body["input_reference"] = {
+                    "image_url": input_reference_image_url,
+                }
+
             record = {
                 "custom_id": f"item-{index}",
                 "method": "POST",
@@ -260,18 +275,55 @@ def parse_batch_jsonl_text(text: str) -> List[Dict[str, Any]]:
 
 
 def extract_video_id_from_batch_row(row: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract the video id from a Batch API output row.
+
+    The video endpoint has returned slightly different JSON shapes across SDK/API
+    versions, and partial-failure batches make it especially important that a
+    successful row is not missed just because the id is nested differently.
+    This accepts the common explicit shapes first, then falls back to a small
+    recursive search for any string that looks like a Sora video id.
+    """
     response = row.get("response") or {}
     body = response.get("body") or {}
 
     if isinstance(body, dict):
-        if body.get("id"):
+        if isinstance(body.get("id"), str) and body["id"].startswith("video_"):
             return body["id"]
 
-        if isinstance(body.get("video"), dict) and body["video"].get("id"):
-            return body["video"]["id"]
+        video = body.get("video")
+        if isinstance(video, dict) and isinstance(video.get("id"), str) and video["id"].startswith("video_"):
+            return video["id"]
+        if isinstance(video, str) and video.startswith("video_"):
+            return video
 
         data = body.get("data")
-        if isinstance(data, dict) and data.get("id"):
+        if isinstance(data, dict) and isinstance(data.get("id"), str) and data["id"].startswith("video_"):
             return data["id"]
 
-    return None
+    def walk(value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            if value.startswith("video_"):
+                return value
+            return None
+
+        if isinstance(value, dict):
+            # Prefer id-like keys first.
+            for key in ("id", "video_id", "video"):
+                found = walk(value.get(key))
+                if found:
+                    return found
+            for nested in value.values():
+                found = walk(nested)
+                if found:
+                    return found
+
+        if isinstance(value, list):
+            for nested in value:
+                found = walk(nested)
+                if found:
+                    return found
+
+        return None
+
+    return walk(row)
