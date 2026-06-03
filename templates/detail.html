@@ -289,6 +289,46 @@
         margin-bottom: 18px;
       }
     }
+
+
+    .source-pill {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #2a2a2a;
+      color: #eee;
+      text-decoration: none;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .preset-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
+
+    .preset-row-compact {
+      align-items: center;
+    }
+
+    .preset-row-compact select {
+      margin-top: 0;
+    }
+
+    .job-prompt-header {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-top: 10px;
+      margin-bottom: 6px;
+    }
+
   </style>
 </head>
 <body>
@@ -368,6 +408,13 @@
       <label>Remix Prompt</label>
       <textarea id="remixPrompt">{{ video.prompt }}</textarea>
 
+      <div class="preset-row preset-row-compact">
+        <select id="remixPreset" aria-label="Remix Instruction Preset" onchange="onDetailPresetChanged('remix')">
+          <option value="">None</option>
+        </select>
+        <a class="source-pill" href="/">Manage presets</a>
+      </div>
+
       <div class="row">
         <div>
           <label>Model</label>
@@ -401,6 +448,13 @@
 
       <label>Continuation Prompt</label>
       <textarea id="extendPrompt">Continue the same scene naturally, preserving the same camera style, lighting, characters, and motion continuity.</textarea>
+
+      <div class="preset-row preset-row-compact">
+        <select id="extendPreset" aria-label="Extend Instruction Preset" onchange="onDetailPresetChanged('extend')">
+          <option value="">None</option>
+        </select>
+        <a class="source-pill" href="/">Manage presets</a>
+      </div>
 
       <div class="row">
         <div>
@@ -455,6 +509,9 @@
     let currentFavorite = {{ 'true' if video.favorite else 'false' }};
     let currentArchived = {{ 'true' if video.archived else 'false' }};
     const BUDGET_DRAFT_KEY = "sora_budget_remaining_draft";
+    const DETAIL_REMIX_PRESET_KEY = "sora_detail_remix_preset";
+    const DETAIL_EXTEND_PRESET_KEY = "sora_detail_extend_preset";
+    let presets = [];
 
     function outputUrl(filename) {
       return `/outputs/${encodeURIComponent(filename)}`;
@@ -492,17 +549,73 @@
       return `$${Number(value || 0).toFixed(2)}`;
     }
 
+    function populateDetailPresetSelects() {
+      ["remix", "extend"].forEach(mode => {
+        const select = document.getElementById(`${mode}Preset`);
+        if (!select) {
+          return;
+        }
+        const storageKey = mode === "extend" ? DETAIL_EXTEND_PRESET_KEY : DETAIL_REMIX_PRESET_KEY;
+        const current = select.value || localStorage.getItem(storageKey) || "";
+        select.innerHTML = `<option value="">None</option>`;
+        presets.forEach(preset => {
+          const option = document.createElement("option");
+          option.value = preset.id;
+          option.textContent = preset.name;
+          select.appendChild(option);
+        });
+        if (current && presets.some(preset => preset.id === current)) {
+          select.value = current;
+        }
+      });
+    }
+
+    async function loadPresets() {
+      try {
+        const response = await fetch("/api/presets", { cache: "no-store" });
+        const data = await response.json();
+        presets = Array.isArray(data.presets) ? data.presets : [];
+      } catch (error) {
+        console.warn("Could not load presets:", error);
+        presets = [];
+      }
+      populateDetailPresetSelects();
+    }
+
+    function onDetailPresetChanged(mode) {
+      const select = document.getElementById(`${mode}Preset`);
+      const storageKey = mode === "extend" ? DETAIL_EXTEND_PRESET_KEY : DETAIL_REMIX_PRESET_KEY;
+      localStorage.setItem(storageKey, select ? select.value || "" : "");
+    }
+
+    function getSelectedDetailPresetPayload(mode) {
+      const select = document.getElementById(`${mode}Preset`);
+      const presetId = select ? select.value : "";
+      const preset = presets.find(item => item.id === presetId);
+      if (!preset) {
+        return { preset_id: "", preset_name: "", preset_template: "" };
+      }
+      return {
+        preset_id: preset.id,
+        preset_name: preset.name,
+        preset_template: preset.template
+      };
+    }
+
     function getActionItem(mode) {
       const promptField = mode === "extend" ? "extendPrompt" : "remixPrompt";
       const modelField = mode === "extend" ? "extendModel" : "remixModel";
       const secondsField = mode === "extend" ? "extendSeconds" : "remixSeconds";
       const sizeField = mode === "extend" ? "extendSize" : "remixSize";
+      const presetPayload = getSelectedDetailPresetPayload(mode);
 
       return {
         mode: mode,
         source_video_id: sourceVideoId,
         source_filename: sourceFilename,
         prompt: document.getElementById(promptField).value.trim(),
+        raw_prompt: document.getElementById(promptField).value.trim(),
+        ...presetPayload,
         model: document.getElementById(modelField).value,
         seconds: document.getElementById(secondsField).value,
         size: document.getElementById(sizeField).value
@@ -594,34 +707,46 @@
     async function copyPrompt() {
       const button = document.getElementById("copyPromptButton");
       const text = currentPrompt || document.getElementById("promptBox").textContent || "";
+      await copyTextToClipboard(text, button);
+    }
+
+    async function copyTextToClipboard(text, button) {
+      const originalText = button ? button.textContent : "Copy prompt";
 
       try {
         if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
+          await navigator.clipboard.writeText(text || "");
         } else {
-          const fallback = document.createElement("textarea");
-          fallback.value = text;
-          fallback.setAttribute("readonly", "");
-          fallback.style.position = "fixed";
-          fallback.style.left = "-9999px";
-          document.body.appendChild(fallback);
-          fallback.select();
+          const textarea = document.createElement("textarea");
+          textarea.value = text || "";
+          textarea.style.position = "fixed";
+          textarea.style.left = "-9999px";
+          textarea.style.top = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.focus();
+          textarea.select();
           document.execCommand("copy");
-          document.body.removeChild(fallback);
+          textarea.remove();
         }
 
-        button.textContent = "Copied";
-        button.classList.add("copied");
-
-        setTimeout(() => {
-          button.textContent = "Copy prompt";
-          button.classList.remove("copied");
-        }, 1200);
+        if (button) {
+          button.textContent = "Copied";
+          button.classList.add("copied");
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.remove("copied");
+          }, 1200);
+        }
       } catch (error) {
-        button.textContent = "Copy failed";
-        setTimeout(() => {
-          button.textContent = "Copy prompt";
-        }, 1400);
+        if (button) {
+          button.textContent = "Copy failed";
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.remove("copied");
+          }, 1400);
+        } else {
+          alert("Failed to copy prompt.");
+        }
       }
     }
 
@@ -783,6 +908,16 @@
         preview.preload = "metadata";
         preview.src = outputUrl(item.filename);
 
+        const promptHeader = document.createElement("div");
+        promptHeader.className = "job-prompt-header";
+
+        const copyPromptButton = document.createElement("button");
+        copyPromptButton.type = "button";
+        copyPromptButton.className = "copy-button";
+        copyPromptButton.textContent = "Copy prompt";
+        copyPromptButton.onclick = () => copyTextToClipboard(item.prompt || "", copyPromptButton);
+        promptHeader.appendChild(copyPromptButton);
+
         const prompt = document.createElement("div");
         prompt.className = "job-text";
         prompt.textContent = item.prompt;
@@ -790,9 +925,11 @@
         result.appendChild(detailLink);
         result.appendChild(sourceLink);
         result.appendChild(preview);
+        result.appendChild(promptHeader);
         result.appendChild(prompt);
       }
     }
+    loadPresets();
     loadBudget();
     updateActionCosts();
   </script>

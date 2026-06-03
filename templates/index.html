@@ -461,6 +461,105 @@
       font-size: 14px;
     }
 
+
+    .preset-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    .preset-row-compact {
+      align-items: center;
+      margin-top: 6px;
+    }
+
+    .preset-row-compact select {
+      margin-top: 0;
+    }
+
+    .job-prompt-header {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-top: 10px;
+      margin-bottom: 6px;
+    }
+
+    .copy-job-prompt-button {
+      width: auto;
+      margin-top: 0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #242424;
+      color: #eee;
+      border: 1px solid #444;
+      font-size: 12px;
+    }
+
+    .copy-job-prompt-button:hover {
+      background: #2e2e2e;
+      border-color: #777;
+    }
+
+    .copy-job-prompt-button.copied {
+      background: #d8eaff;
+      border-color: #d8eaff;
+      color: #07101c;
+    }
+
+    .preset-manager {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: #121212;
+    }
+
+    .preset-manager.open {
+      display: block;
+    }
+
+    .preset-manager-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .preset-manager-heading h3 {
+      margin: 0 0 4px;
+    }
+
+    .preset-action-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .preset-template-box {
+      min-height: 120px;
+    }
+
+    .jobs-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .jobs-panel.collapsed .job-list {
+      display: none;
+    }
+
+    .jobs-panel.collapsed {
+      padding-bottom: 12px;
+    }
+
     @media (max-width: 900px) {
       .layout,
       .duration-row,
@@ -502,6 +601,41 @@
   <div class="layout">
     <div class="panel">
       <label>Prompt</label>
+      <div class="preset-row preset-row-compact">
+        <select id="promptPreset" aria-label="Instruction Preset" onchange="onPromptPresetChanged()">
+          <option value="">None</option>
+        </select>
+        <button type="button" class="small-button" onclick="togglePresetManager()">Manage Presets</button>
+      </div>
+
+      <div class="preset-manager" id="presetManager">
+        <div class="preset-manager-heading">
+          <div>
+            <h3>Manage Instruction Presets</h3>
+            <div class="note">Create multiple reusable wrappers. The selected preset inserts the normal prompt wherever <code>[prompt]</code> appears.</div>
+          </div>
+          <button type="button" class="small-button secondary" onclick="startNewPreset()">+ Add New Preset</button>
+        </div>
+
+        <label>Saved presets</label>
+        <select id="presetManagerSelect" onchange="selectPresetForEditing()">
+          <option value="">New preset</option>
+        </select>
+
+        <label>Preset name</label>
+        <input id="presetName" type="text" placeholder="1980s trailer wrapper">
+
+        <label>Preset template</label>
+        <textarea id="presetTemplate" class="preset-template-box" placeholder="Instruction instruction [prompt] instruction instruction"></textarea>
+        <div class="note">Use [prompt] where the normal textbox prompt should be inserted. If omitted, the preset is prepended above the prompt.</div>
+
+        <div class="preset-action-row">
+          <button type="button" class="secondary" onclick="createPresetFromManager()">Create New Preset</button>
+          <button type="button" class="secondary" onclick="updateSelectedPreset()">Update Selected Preset</button>
+          <button type="button" class="danger" onclick="deleteSelectedPreset()">Delete Selected Preset</button>
+        </div>
+      </div>
+
       <textarea id="prompt"></textarea>
 
       <div class="image-upload-panel">
@@ -571,8 +705,11 @@
     </div>
   </div>
 
-  <div class="panel" style="margin-top:24px;">
-    <h2>Active / Recent Jobs</h2>
+  <div class="panel jobs-panel" id="jobsPanel" style="margin-top:24px;">
+    <div class="jobs-header-row">
+      <h2>Active / Recent Jobs</h2>
+      <button type="button" class="small-button" id="jobsCollapseButton" onclick="toggleJobsPanel()">Collapse</button>
+    </div>
     <div class="job-list" id="jobList">
       <p class="note">No jobs yet.</p>
     </div>
@@ -632,6 +769,9 @@
     let allVideos = Array.isArray({{ videos|tojson }}) ? {{ videos|tojson }} : [];
     let currentGalleryTab = "main";
     let selectedReferenceImage = null;
+    let presets = [];
+    const PROMPT_PRESET_KEY = "sora_selected_prompt_preset";
+    const JOBS_COLLAPSED_KEY = "sora_jobs_panel_collapsed";
     const BUDGET_DRAFT_KEY = "sora_budget_remaining_draft";
     const BATCH_MODE_KEY = "sora_batch_mode_enabled";
 
@@ -646,12 +786,31 @@
       };
     }
 
+    function getSelectedPresetPayload(selectId = "promptPreset") {
+      const select = document.getElementById(selectId);
+      const presetId = select ? select.value : "";
+      const preset = presets.find(item => item.id === presetId);
+
+      if (!preset) {
+        return { preset_id: "", preset_name: "", preset_template: "" };
+      }
+
+      return {
+        preset_id: preset.id,
+        preset_name: preset.name,
+        preset_template: preset.template
+      };
+    }
+
     function getCurrentItem() {
       const prompt = document.getElementById("prompt").value.trim();
       const settings = getCurrentSettings();
+      const presetPayload = getSelectedPresetPayload();
 
       return {
         prompt,
+        raw_prompt: prompt,
+        ...presetPayload,
         model: settings.model,
         seconds: settings.seconds,
         size: settings.size,
@@ -663,6 +822,245 @@
         input_reference_size: selectedReferenceImage ? selectedReferenceImage.size : 0,
         has_input_reference: !!selectedReferenceImage
       };
+    }
+
+    function fillPresetSelect(select, includeNoneLabel, selectedValue) {
+      if (!select) {
+        return;
+      }
+
+      select.innerHTML = `<option value="">${includeNoneLabel}</option>`;
+      presets.forEach(preset => {
+        const option = document.createElement("option");
+        option.value = preset.id;
+        option.textContent = preset.name;
+        select.appendChild(option);
+      });
+
+      if (selectedValue && presets.some(preset => preset.id === selectedValue)) {
+        select.value = selectedValue;
+      }
+    }
+
+    function populatePresetSelects() {
+      const selectedFromStorage = localStorage.getItem(PROMPT_PRESET_KEY) || "";
+      const promptSelect = document.getElementById("promptPreset");
+      const currentPrompt = promptSelect?.value || selectedFromStorage;
+      fillPresetSelect(promptSelect, "None", currentPrompt);
+
+      const managerSelect = document.getElementById("presetManagerSelect");
+      const currentManager = managerSelect?.value || currentPrompt;
+      fillPresetSelect(managerSelect, "New preset", currentManager);
+
+      syncPresetManagerFields();
+    }
+
+    async function loadPresets() {
+      try {
+        const response = await fetch("/api/presets", { cache: "no-store" });
+        const data = await response.json();
+        presets = Array.isArray(data.presets) ? data.presets : [];
+        populatePresetSelects();
+      } catch (error) {
+        console.warn("Could not load presets:", error);
+        presets = [];
+        populatePresetSelects();
+      }
+    }
+
+    function onPromptPresetChanged() {
+      const selected = document.getElementById("promptPreset").value || "";
+      localStorage.setItem(PROMPT_PRESET_KEY, selected);
+
+      const managerSelect = document.getElementById("presetManagerSelect");
+      if (managerSelect) {
+        managerSelect.value = selected;
+      }
+
+      syncPresetManagerFields();
+    }
+
+    function togglePresetManager() {
+      const manager = document.getElementById("presetManager");
+      manager.classList.toggle("open");
+
+      const selected = document.getElementById("promptPreset")?.value || "";
+      const managerSelect = document.getElementById("presetManagerSelect");
+      if (managerSelect) {
+        managerSelect.value = selected;
+      }
+
+      syncPresetManagerFields();
+    }
+
+    function selectPresetForEditing() {
+      const selected = document.getElementById("presetManagerSelect")?.value || "";
+      const promptSelect = document.getElementById("promptPreset");
+
+      if (promptSelect) {
+        promptSelect.value = selected;
+        localStorage.setItem(PROMPT_PRESET_KEY, selected);
+      }
+
+      syncPresetManagerFields();
+    }
+
+    function startNewPreset() {
+      const manager = document.getElementById("presetManager");
+      if (manager) {
+        manager.classList.add("open");
+      }
+
+      const managerSelect = document.getElementById("presetManagerSelect");
+      if (managerSelect) {
+        managerSelect.value = "";
+      }
+
+      const name = document.getElementById("presetName");
+      const template = document.getElementById("presetTemplate");
+      if (name) {
+        name.value = "";
+        name.focus();
+      }
+      if (template) {
+        template.value = "";
+      }
+    }
+
+    function syncPresetManagerFields() {
+      const managerSelect = document.getElementById("presetManagerSelect");
+      const promptSelect = document.getElementById("promptPreset");
+      const selected = managerSelect?.value || promptSelect?.value || "";
+      const preset = presets.find(item => item.id === selected);
+      const name = document.getElementById("presetName");
+      const template = document.getElementById("presetTemplate");
+
+      if (!name || !template) {
+        return;
+      }
+
+      if (managerSelect && managerSelect.value !== selected) {
+        managerSelect.value = selected;
+      }
+
+      if (preset) {
+        name.value = preset.name || "";
+        template.value = preset.template || "";
+      } else {
+        name.value = "";
+        template.value = "";
+      }
+    }
+
+    async function savePresetRequest({ id, name, template, forceNew }) {
+      const response = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, name, template, force_new: !!forceNew })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to save preset.");
+        return null;
+      }
+
+      presets = Array.isArray(data.presets) ? data.presets : [];
+      localStorage.setItem(PROMPT_PRESET_KEY, data.preset.id);
+      populatePresetSelects();
+      document.getElementById("promptPreset").value = data.preset.id;
+      document.getElementById("presetManagerSelect").value = data.preset.id;
+      syncPresetManagerFields();
+      return data.preset;
+    }
+
+    async function createPresetFromManager() {
+      const name = document.getElementById("presetName").value.trim();
+      const template = document.getElementById("presetTemplate").value.trim();
+
+      if (!name || !template) {
+        alert("Preset name and template are required.");
+        return;
+      }
+
+      await savePresetRequest({ id: "", name, template, forceNew: true });
+    }
+
+    async function updateSelectedPreset() {
+      const selected = document.getElementById("presetManagerSelect").value || "";
+      const name = document.getElementById("presetName").value.trim();
+      const template = document.getElementById("presetTemplate").value.trim();
+
+      if (!selected) {
+        alert("Select an existing preset to update, or use Create New Preset.");
+        return;
+      }
+
+      if (!name || !template) {
+        alert("Preset name and template are required.");
+        return;
+      }
+
+      await savePresetRequest({ id: selected, name, template, forceNew: false });
+    }
+
+    async function savePresetFromManager() {
+      const selected = document.getElementById("presetManagerSelect")?.value || "";
+      if (selected) {
+        await updateSelectedPreset();
+      } else {
+        await createPresetFromManager();
+      }
+    }
+
+    async function deleteSelectedPreset() {
+      const selected = document.getElementById("presetManagerSelect")?.value || document.getElementById("promptPreset")?.value || "";
+      if (!selected) {
+        alert("Select a preset to delete.");
+        return;
+      }
+
+      const preset = presets.find(item => item.id === selected);
+      const presetName = preset ? preset.name : "this preset";
+      if (!confirm(`Delete ${presetName}?`)) {
+        return;
+      }
+
+      const response = await fetch(`/api/presets/${encodeURIComponent(selected)}`, { method: "DELETE" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to delete preset.");
+        return;
+      }
+
+      presets = Array.isArray(data.presets) ? data.presets : [];
+      localStorage.setItem(PROMPT_PRESET_KEY, "");
+      populatePresetSelects();
+      startNewPreset();
+    }
+
+    function toggleJobsPanel() {
+      const panel = document.getElementById("jobsPanel");
+      const button = document.getElementById("jobsCollapseButton");
+      const collapsed = !panel.classList.contains("collapsed");
+      panel.classList.toggle("collapsed", collapsed);
+      if (button) {
+        button.textContent = collapsed ? "Expand" : "Collapse";
+      }
+      localStorage.setItem(JOBS_COLLAPSED_KEY, collapsed ? "true" : "false");
+    }
+
+    function loadJobsPanelState() {
+      const collapsed = localStorage.getItem(JOBS_COLLAPSED_KEY) === "true";
+      const panel = document.getElementById("jobsPanel");
+      const button = document.getElementById("jobsCollapseButton");
+      if (panel) {
+        panel.classList.toggle("collapsed", collapsed);
+      }
+      if (button) {
+        button.textContent = collapsed ? "Expand" : "Collapse";
+      }
     }
 
     function humanFileSize(bytes) {
@@ -944,6 +1342,7 @@
         meta.className = "meta";
         meta.textContent =
           `${item.model} | ${item.seconds}s | ${item.size} | est. ${money(estimateItemCost(item, "batch"))}` +
+          (item.preset_name ? ` | preset: ${item.preset_name}` : "") +
           (item.input_reference_name ? ` | image: ${item.input_reference_name}` : "") +
           (item.source_filename ? ` | source: ${item.source_filename}` : "");
 
@@ -1013,6 +1412,12 @@
       document.getElementById("prompt").value = item.prompt;
       document.getElementById("model").value = item.model || "sora-2";
       document.getElementById("size").value = item.size || "720x1280";
+      const promptPreset = document.getElementById("promptPreset");
+      if (promptPreset) {
+        promptPreset.value = item.preset_id || "";
+        localStorage.setItem(PROMPT_PRESET_KEY, promptPreset.value);
+        syncPresetManagerFields();
+      }
 
       const preset = document.getElementById("preset_seconds");
       const custom = document.getElementById("custom_seconds");
@@ -1233,6 +1638,16 @@
           container.appendChild(resumeButton);
         }
 
+        if (jobCanRetryBatch(job)) {
+          const retryButton = document.createElement("button");
+          retryButton.type = "button";
+          retryButton.className = "secondary";
+          retryButton.textContent = "Retry OpenAI Batch";
+          retryButton.style.marginTop = "10px";
+          retryButton.onclick = () => retryBatchJob(job.job_id);
+          container.appendChild(retryButton);
+        }
+
         if (jobCanResumeStandardPolling(job)) {
           const resumeButton = document.createElement("button");
           resumeButton.type = "button";
@@ -1300,6 +1715,24 @@
 
       const terminalStatuses = new Set(["completed", "completed_with_errors", "failed", "expired", "cancelled", "interrupted"]);
       return terminalStatuses.has(job.status) || jobNeedsBatchOutputFetch(job);
+    }
+
+    function jobCanRetryBatch(job) {
+      if (!job || job.job_type !== "openai_batch") {
+        return false;
+      }
+
+      const terminalStatuses = new Set(["failed", "expired", "cancelled", "interrupted"]);
+      if (!terminalStatuses.has(job.status)) {
+        return false;
+      }
+
+      const items = job.items || [];
+      if (items.length === 0) {
+        return false;
+      }
+
+      return items.some(item => item && item.mode === "generate" && !item.filename);
     }
 
 
@@ -1378,6 +1811,27 @@
       startJobsPolling();
     }
 
+    async function retryBatchJob(jobId) {
+      const confirmed = confirm("Create a new OpenAI Batch job from the failed/missing-output items? This submits a new batch request and may be charged if it succeeds.");
+      if (!confirmed) {
+        return;
+      }
+
+      const response = await fetch(`/api/retry-batch/${encodeURIComponent(jobId)}`, {
+        method: "POST"
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to retry OpenAI Batch job.");
+        return;
+      }
+
+      await loadJobs();
+      startJobsPolling();
+    }
+
     function renderJobItem(item, index) {
       const itemDiv = document.createElement("div");
       itemDiv.className = "job-item";
@@ -1390,6 +1844,7 @@
       itemMeta.className = "meta";
       itemMeta.textContent =
         `${formatMode(item.mode)} | ${item.model} | ${item.seconds}s | ${item.size}` +
+        (item.preset_name ? ` | preset: ${item.preset_name}` : "") +
         (item.input_reference_name ? ` | image: ${item.input_reference_name}` : "");
 
       const progressShell = document.createElement("div");
@@ -1400,6 +1855,16 @@
       progressBar.style.width = `${item.progress || 0}%`;
 
       progressShell.appendChild(progressBar);
+
+      const promptHeader = document.createElement("div");
+      promptHeader.className = "job-prompt-header";
+
+      const copyPromptButton = document.createElement("button");
+      copyPromptButton.type = "button";
+      copyPromptButton.className = "copy-job-prompt-button";
+      copyPromptButton.textContent = "Copy prompt";
+      copyPromptButton.onclick = () => copyJobPrompt(item.prompt || "", copyPromptButton);
+      promptHeader.appendChild(copyPromptButton);
 
       const prompt = document.createElement("div");
       prompt.className = "job-text";
@@ -1435,8 +1900,41 @@
         itemDiv.appendChild(error);
       }
 
+      itemDiv.appendChild(promptHeader);
       itemDiv.appendChild(prompt);
       return itemDiv;
+    }
+
+    async function copyJobPrompt(text, button) {
+      const originalText = button ? button.textContent : "Copy prompt";
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text || "");
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.value = text || "";
+          textarea.style.position = "fixed";
+          textarea.style.left = "-9999px";
+          textarea.style.top = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.focus();
+          textarea.select();
+          document.execCommand("copy");
+          textarea.remove();
+        }
+
+        if (button) {
+          button.textContent = "Copied";
+          button.classList.add("copied");
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.remove("copied");
+          }, 1200);
+        }
+      } catch (error) {
+        alert("Failed to copy prompt.");
+      }
     }
 
     function setGalleryTab(tab) {
@@ -1837,6 +2335,8 @@
     }
 
     async function initApp() {
+      loadJobsPanelState();
+      await loadPresets();
       loadQueueFromLocalStorage();
       loadBatchModeFromLocalStorage();
       renderQueue();

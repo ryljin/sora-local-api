@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import tempfile
 import os
@@ -36,11 +37,13 @@ views_lock = threading.Lock()
 favorites_lock = threading.Lock()
 archive_lock = threading.Lock()
 budget_lock = threading.Lock()
+presets_lock = threading.Lock()
 VIEWS_FILE = OUTPUT_DIR / "views.json"
 FAVORITES_FILE = OUTPUT_DIR / "favorites.json"
 ARCHIVE_FILE = OUTPUT_DIR / "archive.json"
 BUDGET_FILE = OUTPUT_DIR / "budget.json"
 JOBS_FILE = OUTPUT_DIR / "jobs.json"
+PRESETS_FILE = OUTPUT_DIR / "presets.json"
 THUMBNAIL_DIR = OUTPUT_DIR / "thumbnails"
 UPLOAD_DIR = OUTPUT_DIR / "uploads"
 THUMBNAIL_DIR.mkdir(exist_ok=True)
@@ -502,6 +505,129 @@ def save_budget(remaining: str):
         return data
 
 
+def normalize_preset_id(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_").lower()
+    return cleaned[:80] or f"preset_{uuid.uuid4().hex[:10]}"
+
+
+def load_presets():
+    with presets_lock:
+        if not PRESETS_FILE.exists():
+            return []
+
+        try:
+            data = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+            presets = data.get("presets", [])
+            if not isinstance(presets, list):
+                return []
+
+            cleaned = []
+            seen = set()
+            for preset in presets:
+                if not isinstance(preset, dict):
+                    continue
+                name = str(preset.get("name") or "").strip()
+                template = str(preset.get("template") or "").strip()
+                if not name or not template:
+                    continue
+                preset_id = normalize_preset_id(preset.get("id") or name)
+                if preset_id in seen:
+                    continue
+                seen.add(preset_id)
+                cleaned.append({
+                    "id": preset_id,
+                    "name": name[:120],
+                    "template": template,
+                    "updated_at": preset.get("updated_at") or "",
+                })
+            return cleaned
+        except Exception:
+            return []
+
+
+def save_presets(presets):
+    with presets_lock:
+        PRESETS_FILE.write_text(
+            json.dumps({"presets": presets}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def make_unique_preset_id(base_id: str, presets):
+    base_id = normalize_preset_id(base_id)
+    existing_ids = {preset.get("id") for preset in presets}
+
+    if base_id not in existing_ids:
+        return base_id
+
+    for number in range(2, 10000):
+        candidate = f"{base_id}_{number}"
+        if candidate not in existing_ids:
+            return candidate
+
+    return f"{base_id}_{uuid.uuid4().hex[:8]}"
+
+
+def upsert_preset(preset_id: str, name: str, template: str, force_new: bool = False):
+    name = str(name or "").strip()
+    template = str(template or "").strip()
+    if not name:
+        raise ValueError("Preset name is required.")
+    if not template:
+        raise ValueError("Preset template is required.")
+
+    presets = load_presets()
+
+    if force_new:
+        preset_id = make_unique_preset_id(preset_id or name, presets)
+    else:
+        preset_id = normalize_preset_id(preset_id or name)
+
+    now = datetime.now().isoformat(timespec="seconds")
+    new_preset = {
+        "id": preset_id,
+        "name": name[:120],
+        "template": template,
+        "updated_at": now,
+    }
+
+    replaced = False
+    if not force_new:
+        for index, existing in enumerate(presets):
+            if existing.get("id") == preset_id:
+                presets[index] = new_preset
+                replaced = True
+                break
+
+    if not replaced:
+        presets.append(new_preset)
+
+    presets.sort(key=lambda item: item.get("name", "").lower())
+    save_presets(presets)
+    return new_preset
+
+
+def delete_preset(preset_id: str):
+    preset_id = normalize_preset_id(preset_id)
+    presets = load_presets()
+    remaining = [preset for preset in presets if preset.get("id") != preset_id]
+    if len(remaining) == len(presets):
+        return False
+    save_presets(remaining)
+    return True
+
+
+def apply_prompt_preset(raw_prompt: str, preset_template: str) -> str:
+    raw_prompt = str(raw_prompt or "").strip()
+    preset_template = str(preset_template or "").strip()
+
+    if not preset_template:
+        return raw_prompt
+
+    if "[prompt]" in preset_template:
+        return preset_template.replace("[prompt]", raw_prompt)
+
+    return f"{preset_template}\n\n{raw_prompt}".strip()
 
 
 def parse_requested_video_size(size: str):
@@ -1839,9 +1965,25 @@ def run_openai_batch_job(job_id, items, existing_batch_id=None):
             save_jobs_snapshot_unlocked()
 
 def clean_item_from_request(item):
-    prompt = item.get("prompt", "").strip()
-    if not prompt:
+    raw_prompt = item.get("raw_prompt") or item.get("prompt", "")
+    raw_prompt = str(raw_prompt or "").strip()
+    if not raw_prompt:
         return None
+
+    preset_id = str(item.get("preset_id") or "").strip()
+    preset_name = str(item.get("preset_name") or "").strip()
+    preset_template = str(item.get("preset_template") or "").strip()
+
+    # Trust the frozen preset template sent with a queued item. If only an ID is
+    # supplied, resolve it from the current preset file.
+    if preset_id and not preset_template:
+        for preset in load_presets():
+            if preset.get("id") == preset_id:
+                preset_name = preset.get("name") or preset_name
+                preset_template = preset.get("template") or ""
+                break
+
+    prompt = apply_prompt_preset(raw_prompt, preset_template)
 
     mode = item.get("mode", "generate")
     source_video_id = item.get("source_video_id") or ""
@@ -1852,6 +1994,10 @@ def clean_item_from_request(item):
 
     clean_item = {
         "prompt": prompt,
+        "raw_prompt": raw_prompt,
+        "preset_id": preset_id,
+        "preset_name": preset_name,
+        "preset_template": preset_template,
         "model": item.get("model", "sora-2"),
         "seconds": str(item.get("seconds", "4")).strip(),
         "size": item.get("size", "720x1280"),
@@ -1875,6 +2021,40 @@ def clean_item_from_request(item):
 
     return prepare_input_reference_for_api(clean_item)
 
+
+
+
+def clone_batch_item_for_retry(item):
+    """
+    Build a clean retry copy from a persisted OpenAI Batch item.
+    The old job is left intact; retry creates a new local batch job for items
+    that never produced a local output file.
+    """
+    retry_item = copy.deepcopy(item)
+
+    retry_item["status"] = "waiting"
+    retry_item["progress"] = 0
+    retry_item["filename"] = None
+    retry_item["video_id"] = None
+    retry_item["batch_custom_id"] = ""
+    retry_item["error"] = None
+
+    # These fields belong to the previous OpenAI batch attempt, not the retry.
+    retry_item.pop("output_file_id", None)
+    retry_item.pop("error_file_id", None)
+
+    # Older saved rows may only have raw_prompt, or only prompt. Preserve the
+    # frozen preset wrapping behavior if available.
+    raw_prompt = str(retry_item.get("raw_prompt") or "").strip()
+    preset_template = str(retry_item.get("preset_template") or "").strip()
+    prompt = str(retry_item.get("prompt") or "").strip()
+    if raw_prompt:
+        retry_item["prompt"] = apply_prompt_preset(raw_prompt, preset_template)
+    elif prompt:
+        retry_item["raw_prompt"] = prompt
+        retry_item["prompt"] = prompt
+
+    return retry_item
 
 def create_local_job(items, job_type="standard"):
     job_id = str(uuid.uuid4())
@@ -1924,6 +2104,34 @@ def video_detail(filename):
 
     video = read_metadata(filename)
     return render_template("detail.html", video=video)
+
+
+@app.route("/api/presets")
+def api_presets():
+    return jsonify({"presets": load_presets()})
+
+
+@app.route("/api/presets", methods=["POST"])
+def api_save_preset():
+    data = request.get_json(force=True)
+    try:
+        preset = upsert_preset(
+            data.get("id") or "",
+            data.get("name") or "",
+            data.get("template") or "",
+            bool(data.get("force_new")),
+        )
+        return jsonify({"preset": preset, "presets": load_presets()})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/presets/<preset_id>", methods=["DELETE"])
+def api_delete_preset(preset_id):
+    deleted = delete_preset(preset_id)
+    if not deleted:
+        return jsonify({"error": "Preset not found."}), 404
+    return jsonify({"deleted": True, "presets": load_presets()})
 
 
 @app.route("/api/start", methods=["POST"])
@@ -2058,6 +2266,64 @@ def api_cancel_batch(job_id):
                 save_jobs_snapshot_unlocked()
 
         return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/retry-batch/<job_id>", methods=["POST"])
+def api_retry_batch(job_id):
+    with jobs_lock:
+        old_job = jobs.get(job_id)
+        if not old_job:
+            return jsonify({"error": "Job not found."}), 404
+
+        if old_job.get("job_type") != "openai_batch":
+            return jsonify({"error": "Only OpenAI batch jobs can be retried here."}), 400
+
+        if old_job.get("status") not in TERMINAL_JOB_STATUSES:
+            return jsonify({"error": "This batch job is still active. Abort it before retrying."}), 400
+
+        retry_items = []
+        for item in old_job.get("items", []):
+            if item.get("filename"):
+                continue
+            if item.get("mode") != "generate":
+                continue
+            retry_items.append(clone_batch_item_for_retry(item))
+
+    if not retry_items:
+        return jsonify({"error": "No failed or missing-output batch items are available to retry."}), 400
+
+    missing_batch_refs = [
+        item for item in retry_items
+        if item.get("has_input_reference")
+        and item.get("input_reference_local_filename")
+        and not item.get("input_reference_file_id")
+    ]
+    if missing_batch_refs:
+        first_error = missing_batch_refs[0].get("input_reference_upload_error") or "OpenAI Files upload failed for the image reference."
+        return jsonify({
+            "error": "Image-guided OpenAI Batch retry requires the image to upload to OpenAI Files first. " + first_error
+        }), 400
+
+    models = set(item.get("model", "sora-2") for item in retry_items)
+    if len(models) > 1:
+        return jsonify({
+            "error": "OpenAI Batch input files for this UI are restricted to one model at a time. Retry one model group at a time."
+        }), 400
+
+    new_job_id = create_local_job(retry_items, job_type="openai_batch")
+
+    with jobs_lock:
+        new_job = jobs.get(new_job_id)
+        if new_job:
+            new_job["retry_of_job_id"] = job_id
+            new_job["error"] = None
+            save_jobs_snapshot_unlocked()
+
+    thread = threading.Thread(target=run_openai_batch_job, args=(new_job_id, retry_items), daemon=True)
+    thread.start()
+
+    return jsonify({"job_id": new_job_id, "retry_of_job_id": job_id})
 
 
 @app.route("/api/resume-batch/<job_id>", methods=["POST"])
