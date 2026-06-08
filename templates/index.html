@@ -552,12 +552,175 @@
       gap: 12px;
     }
 
+    .jobs-header-row h2,
+    .jobs-header-row h3 {
+      margin: 0;
+    }
+
     .jobs-panel.collapsed .job-list {
       display: none;
     }
 
     .jobs-panel.collapsed {
       padding-bottom: 12px;
+    }
+
+
+    .job-notification {
+      border: 1px solid #444;
+      border-radius: 10px;
+      padding: 12px;
+      margin: 10px 0;
+      background: #151515;
+    }
+
+    .job-notification.error {
+      border-color: #8a3333;
+      background: #1b1010;
+    }
+
+    .job-notification.active {
+      border-color: #40546a;
+      background: #101621;
+    }
+
+
+    .job-summary-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .job-summary-main {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .job-summary-title {
+      font-weight: bold;
+      color: #eee;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .job-summary-meta {
+      color: #aaa;
+      font-size: 13px;
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .job-summary-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .job-expand-icon {
+      color: #aaa;
+      font-size: 18px;
+      line-height: 1;
+      width: 20px;
+      text-align: center;
+    }
+
+    .job-details {
+      display: none;
+      margin-top: 12px;
+    }
+
+    .job-notification.expanded .job-details,
+    .job-log-row.expanded .job-details {
+      display: block;
+    }
+
+    .job-log-row {
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 12px;
+      margin: 10px 0;
+      background: #151515;
+    }
+
+    .gallery-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      margin: 12px 0;
+    }
+
+    .gallery-search-box label {
+      margin-top: 0;
+    }
+
+    .gallery-search-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .gallery-search-actions .small-button {
+      min-width: 80px;
+    }
+
+    @media (max-width: 760px) {
+      .gallery-toolbar {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .notification-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .job-log-panel {
+      margin-top: 16px;
+    }
+
+    .job-log-panel.collapsed .job-log-body {
+      display: none;
+    }
+
+    .pagination-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: center;
+      margin: 18px 0;
+      flex-wrap: wrap;
+    }
+
+    .pagination-row .small-button {
+      min-width: 90px;
+    }
+
+    .result-retry-button {
+      width: auto;
+      margin: 0;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(34, 48, 68, 0.9);
+      color: #d8eaff;
+      border: 1px solid #40546a;
+      font-size: 12px;
+      z-index: 2;
+    }
+
+    .result-retry-button:hover {
+      background: #d8eaff;
+      color: #07101c;
     }
 
     @media (max-width: 900px) {
@@ -707,16 +870,39 @@
 
   <div class="panel jobs-panel" id="jobsPanel" style="margin-top:24px;">
     <div class="jobs-header-row">
-      <h2>Active / Recent Jobs</h2>
+      <h2>Jobs</h2>
       <button type="button" class="small-button" id="jobsCollapseButton" onclick="toggleJobsPanel()">Collapse</button>
     </div>
     <div class="job-list" id="jobList">
-      <p class="note">No jobs yet.</p>
+      <p class="note">No active or error jobs.</p>
+    </div>
+  </div>
+
+  <div class="panel job-log-panel collapsed" id="jobLogPanel" style="margin-top:14px;">
+    <div class="jobs-header-row">
+      <h3>Job Log</h3>
+      <button type="button" class="small-button" id="jobLogToggleButton" onclick="toggleJobLogPanel()">Show Log</button>
+    </div>
+    <div class="job-log-body">
+      <div class="job-list" id="jobLogList">
+        <p class="note">Job log not loaded.</p>
+      </div>
+      <div class="pagination-row" id="jobLogPagination"></div>
     </div>
   </div>
 
   <h2>Local Outputs</h2>
   <div class="note" id="thumbnailStatus" style="margin-bottom:10px;">Thumbnail cache checking...</div>
+  <div class="gallery-toolbar">
+    <div class="gallery-search-box">
+      <label for="gallerySearch">Search prompts</label>
+      <input id="gallerySearch" type="search" placeholder="Search words in prompts, filenames, presets, image names..." onkeydown="handleGallerySearchKey(event)">
+    </div>
+    <div class="gallery-search-actions">
+      <button type="button" class="small-button" onclick="applyGallerySearch()">Search</button>
+      <button type="button" class="small-button secondary" onclick="clearGallerySearch()">Clear</button>
+    </div>
+  </div>
   <div class="tabs">
     <button type="button" class="tab-button active" id="tab-main" onclick="setGalleryTab('main')">Main</button>
     <button type="button" class="tab-button" id="tab-favorites" onclick="setGalleryTab('favorites')">Favorites</button>
@@ -749,6 +935,7 @@
       {% endif %}
     {% endfor %}
   </div>
+  <div class="pagination-row" id="outputsPagination"></div>
 
   <script>
     const PRICE_PER_SECOND = {
@@ -768,6 +955,13 @@
     let lastCompletedOutputCount = null;
     let allVideos = Array.isArray({{ videos|tojson }}) ? {{ videos|tojson }} : [];
     let currentGalleryTab = "main";
+    let galleryPage = 1;
+    let galleryPagination = { page: 1, total_pages: 1, total: 0 };
+    let gallerySearchQuery = localStorage.getItem("sora_gallery_search_query") || "";
+    let expandedJobIds = new Set(JSON.parse(localStorage.getItem("sora_expanded_job_ids") || "[]"));
+    let jobLogPage = 1;
+    let jobLogPagination = { page: 1, total_pages: 1, total: 0 };
+    let dismissedJobIds = new Set(JSON.parse(localStorage.getItem("sora_dismissed_job_notifications") || "[]"));
     let selectedReferenceImage = null;
     let presets = [];
     const PROMPT_PRESET_KEY = "sora_selected_prompt_preset";
@@ -1550,13 +1744,14 @@
     }
 
     async function loadJobs() {
-      const response = await fetch("/api/jobs");
+      const response = await fetch("/api/jobs", { cache: "no-store" });
       const data = await response.json();
 
-      renderJobs(data.jobs || []);
+      const notificationJobs = data.jobs || [];
+      renderJobs(notificationJobs);
 
-      const hasUnfinished = (data.jobs || []).some(job => job.status !== "completed" && job.status !== "failed");
-      const completedOutputCount = (data.jobs || [])
+      const hasUnfinished = notificationJobs.some(job => !["completed", "completed_with_errors", "failed", "expired", "cancelled", "interrupted"].includes(job.status));
+      const completedOutputCount = notificationJobs
         .flatMap(job => job.items || [])
         .filter(item => item.filename).length;
 
@@ -1566,6 +1761,8 @@
         lastCompletedOutputCount = completedOutputCount;
         refreshOutputs();
       }
+
+      await loadJobLog(false);
 
       if (!hasUnfinished && jobsPollTimer) {
         clearInterval(jobsPollTimer);
@@ -1585,87 +1782,265 @@
       const jobList = document.getElementById("jobList");
       jobList.innerHTML = "";
 
-      if (jobs.length === 0) {
-        jobList.innerHTML = `<p class="note">No jobs yet.</p>`;
+      const visibleJobs = (jobs || []).filter(job => !dismissedJobIds.has(job.job_id));
+
+      if (visibleJobs.length === 0) {
+        jobList.innerHTML = `<p class="note">No active or error job notifications.</p>`;
+        return;
+      }
+
+      visibleJobs.forEach(job => {
+        jobList.appendChild(renderJobCard(job, { notification: true }));
+      });
+    }
+
+    function renderJobCard(job, options = {}) {
+      const isNotification = Boolean(options.notification);
+      const isActive = !["completed", "completed_with_errors", "failed", "expired", "cancelled", "interrupted"].includes(job.status);
+      const container = document.createElement("div");
+      container.className = isNotification
+        ? `job-notification ${isActive ? "active" : "error"}`
+        : "job-log-row";
+      container.dataset.jobId = job.job_id;
+      container.classList.toggle("expanded", expandedJobIds.has(job.job_id));
+
+      const summary = document.createElement("div");
+      summary.className = "job-summary-bar";
+      summary.onclick = () => toggleJobExpanded(job.job_id);
+
+      const summaryMain = document.createElement("div");
+      summaryMain.className = "job-summary-main";
+
+      const title = document.createElement("div");
+      title.className = "job-summary-title";
+      title.textContent = `${job.job_type === "openai_batch" ? "OpenAI Batch" : "Standard"} Job ${job.job_id}`;
+
+      const itemCount = (job.items || []).length;
+      const doneCount = (job.items || []).filter(item => item.filename).length;
+      const failedCount = (job.items || []).filter(item => item.status === "failed" || item.error).length;
+      const counts = job.request_counts || {};
+      const batchText = job.batch_id
+        ? ` | Batch: ${job.batch_id} | Completed: ${counts.completed || 0}/${counts.total || 0} | Failed: ${counts.failed || 0}`
+        : "";
+
+      const meta = document.createElement("div");
+      meta.className = "job-summary-meta";
+      meta.textContent = `Status: ${job.status} | Progress: ${job.progress || 0}% | Outputs: ${doneCount}/${itemCount} | Errors: ${failedCount}${batchText}`;
+
+      summaryMain.appendChild(title);
+      summaryMain.appendChild(meta);
+
+      const summaryRight = document.createElement("div");
+      summaryRight.className = "job-summary-right";
+
+      if (isNotification) {
+        const dismissButton = document.createElement("button");
+        dismissButton.type = "button";
+        dismissButton.className = "small-button";
+        dismissButton.textContent = "Dismiss";
+        dismissButton.onclick = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          dismissJobNotification(job.job_id);
+        };
+        summaryRight.appendChild(dismissButton);
+      }
+
+      const icon = document.createElement("div");
+      icon.className = "job-expand-icon";
+      icon.textContent = expandedJobIds.has(job.job_id) ? "▾" : "▸";
+      summaryRight.appendChild(icon);
+
+      summary.appendChild(summaryMain);
+      summary.appendChild(summaryRight);
+      container.appendChild(summary);
+
+      const details = document.createElement("div");
+      details.className = "job-details";
+
+      const detailMeta = document.createElement("div");
+      detailMeta.className = "meta";
+      detailMeta.textContent = `Created: ${job.created_at || "unknown"}${job.started_at ? ` | Started: ${job.started_at}` : ""}${job.completed_at ? ` | Completed: ${job.completed_at}` : ""}`;
+      details.appendChild(detailMeta);
+
+      if (job.batch_id) {
+        const batchMeta = document.createElement("div");
+        batchMeta.className = "meta";
+        batchMeta.textContent = `Batch ID: ${job.batch_id}`;
+        details.appendChild(batchMeta);
+      }
+
+      if (job.error) {
+        const error = document.createElement("div");
+        error.style.color = "#ffb3b3";
+        error.textContent = job.error;
+        details.appendChild(error);
+      }
+
+      const actionRow = document.createElement("div");
+      actionRow.className = "notification-actions";
+
+      if (jobCanCancelBatch(job)) {
+        const abortButton = document.createElement("button");
+        abortButton.type = "button";
+        abortButton.className = "danger";
+        abortButton.textContent = "Abort Batch";
+        abortButton.onclick = () => cancelBatchJob(job.job_id);
+        actionRow.appendChild(abortButton);
+      }
+
+      if (jobCanResumeBatchPolling(job)) {
+        const resumeButton = document.createElement("button");
+        resumeButton.type = "button";
+        resumeButton.className = "secondary";
+        resumeButton.textContent = jobNeedsBatchOutputFetch(job) ? "Fetch Batch Outputs" : "Resume Batch Polling";
+        resumeButton.onclick = () => resumeBatchJob(job.job_id);
+        actionRow.appendChild(resumeButton);
+      }
+
+      if (jobCanRetryBatch(job)) {
+        const retryButton = document.createElement("button");
+        retryButton.type = "button";
+        retryButton.className = "secondary";
+        retryButton.textContent = "Retry OpenAI Batch";
+        retryButton.onclick = () => retryBatchJob(job.job_id);
+        actionRow.appendChild(retryButton);
+      }
+
+      if (jobCanResumeStandardPolling(job)) {
+        const resumeButton = document.createElement("button");
+        resumeButton.type = "button";
+        resumeButton.className = "secondary";
+        resumeButton.textContent = "Resume / Retry Standard Job";
+        resumeButton.onclick = () => resumeStandardJob(job.job_id);
+        actionRow.appendChild(resumeButton);
+      }
+
+      if (actionRow.childNodes.length) {
+        details.appendChild(actionRow);
+      }
+
+      (job.items || []).forEach((item, index) => {
+        details.appendChild(renderJobItem(item, index));
+      });
+
+      container.appendChild(details);
+      return container;
+    }
+
+    function toggleJobExpanded(jobId) {
+      if (!jobId) {
+        return;
+      }
+      if (expandedJobIds.has(jobId)) {
+        expandedJobIds.delete(jobId);
+      } else {
+        expandedJobIds.add(jobId);
+      }
+      localStorage.setItem("sora_expanded_job_ids", JSON.stringify(Array.from(expandedJobIds)));
+
+      document.querySelectorAll(`[data-job-id="${CSS.escape(jobId)}"]`).forEach(element => {
+        element.classList.toggle("expanded", expandedJobIds.has(jobId));
+        const icon = element.querySelector(".job-expand-icon");
+        if (icon) {
+          icon.textContent = expandedJobIds.has(jobId) ? "▾" : "▸";
+        }
+      });
+    }
+
+    function dismissJobNotification(jobId) {
+      dismissedJobIds.add(jobId);
+      localStorage.setItem("sora_dismissed_job_notifications", JSON.stringify(Array.from(dismissedJobIds)));
+      loadJobs();
+    }
+
+    function toggleJobLogPanel() {
+      const panel = document.getElementById("jobLogPanel");
+      const button = document.getElementById("jobLogToggleButton");
+      const collapsed = !panel.classList.contains("collapsed");
+      panel.classList.toggle("collapsed", collapsed);
+      if (button) {
+        button.textContent = collapsed ? "Show Log" : "Hide Log";
+      }
+      if (!collapsed) {
+        loadJobLog(true);
+      }
+    }
+
+    async function loadJobLog(forceRender = false) {
+      const panel = document.getElementById("jobLogPanel");
+      if (!forceRender && panel && panel.classList.contains("collapsed")) {
+        return;
+      }
+
+      const params = new URLSearchParams({ page: String(jobLogPage), per_page: "12" });
+      const response = await fetch(`/api/jobs/log?${params.toString()}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) {
+        console.warn(data.error || "Could not load job log.");
+        return;
+      }
+
+      jobLogPagination = data.pagination || { page: 1, total_pages: 1, total: 0 };
+      jobLogPage = jobLogPagination.page || jobLogPage;
+      renderJobLog(data.jobs || []);
+      renderJobLogPagination();
+    }
+
+    function renderJobLog(jobs) {
+      const list = document.getElementById("jobLogList");
+      if (!list) {
+        return;
+      }
+      list.innerHTML = "";
+      if (!jobs.length) {
+        list.innerHTML = `<p class="note">No jobs in the log.</p>`;
         return;
       }
 
       jobs.forEach(job => {
-        const container = document.createElement("div");
-        container.className = "job-item";
-
-        const title = document.createElement("h3");
-        title.textContent = `${job.job_type === "openai_batch" ? "OpenAI Batch" : "Standard"} Job ${job.job_id}`;
-        container.appendChild(title);
-
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        meta.textContent = `Status: ${job.status} | Progress: ${job.progress || 0}% | Created: ${job.created_at || "unknown"}`;
-        container.appendChild(meta);
-
-        if (job.batch_id) {
-          const batchMeta = document.createElement("div");
-          batchMeta.className = "meta";
-          const counts = job.request_counts || {};
-          batchMeta.textContent = `Batch ID: ${job.batch_id} | Completed: ${counts.completed || 0}/${counts.total || 0} | Failed: ${counts.failed || 0}`;
-          container.appendChild(batchMeta);
-        }
-
-        if (job.error) {
-          const error = document.createElement("div");
-          error.style.color = "#ffb3b3";
-          error.textContent = job.error;
-          container.appendChild(error);
-        }
-
-        if (jobCanCancelBatch(job)) {
-          const abortButton = document.createElement("button");
-          abortButton.type = "button";
-          abortButton.className = "danger";
-          abortButton.textContent = "Abort Batch";
-          abortButton.style.marginTop = "10px";
-          abortButton.onclick = () => cancelBatchJob(job.job_id);
-          container.appendChild(abortButton);
-        }
-
-        if (jobCanResumeBatchPolling(job)) {
-          const resumeButton = document.createElement("button");
-          resumeButton.type = "button";
-          resumeButton.className = "secondary";
-          resumeButton.textContent = jobNeedsBatchOutputFetch(job) ? "Fetch Batch Outputs" : "Resume Batch Polling";
-          resumeButton.style.marginTop = "10px";
-          resumeButton.onclick = () => resumeBatchJob(job.job_id);
-          container.appendChild(resumeButton);
-        }
-
-        if (jobCanRetryBatch(job)) {
-          const retryButton = document.createElement("button");
-          retryButton.type = "button";
-          retryButton.className = "secondary";
-          retryButton.textContent = "Retry OpenAI Batch";
-          retryButton.style.marginTop = "10px";
-          retryButton.onclick = () => retryBatchJob(job.job_id);
-          container.appendChild(retryButton);
-        }
-
-        if (jobCanResumeStandardPolling(job)) {
-          const resumeButton = document.createElement("button");
-          resumeButton.type = "button";
-          resumeButton.className = "secondary";
-          resumeButton.textContent = "Resume / Retry Standard Job";
-          resumeButton.style.marginTop = "10px";
-          resumeButton.onclick = () => resumeStandardJob(job.job_id);
-          container.appendChild(resumeButton);
-        }
-
-        (job.items || []).forEach((item, index) => {
-          container.appendChild(renderJobItem(item, index));
-        });
-
-        jobList.appendChild(container);
+        list.appendChild(renderJobCard(job, { notification: false }));
       });
     }
 
+    function renderJobLogPagination() {
+      const container = document.getElementById("jobLogPagination");
+      if (!container) {
+        return;
+      }
+      const page = jobLogPagination.page || 1;
+      const totalPages = jobLogPagination.total_pages || 1;
+      const total = jobLogPagination.total || 0;
+      container.innerHTML = "";
+
+      const prev = document.createElement("button");
+      prev.type = "button";
+      prev.className = "small-button";
+      prev.textContent = "Previous";
+      prev.disabled = page <= 1;
+      prev.onclick = () => {
+        jobLogPage = Math.max(1, page - 1);
+        loadJobLog(true);
+      };
+
+      const label = document.createElement("div");
+      label.className = "meta";
+      label.textContent = `Log page ${page} of ${totalPages} • ${total} jobs`;
+
+      const next = document.createElement("button");
+      next.type = "button";
+      next.className = "small-button";
+      next.textContent = "Next";
+      next.disabled = page >= totalPages;
+      next.onclick = () => {
+        jobLogPage = Math.min(totalPages, page + 1);
+        loadJobLog(true);
+      };
+
+      container.appendChild(prev);
+      container.appendChild(label);
+      container.appendChild(next);
+    }
 
     function jobCanCancelBatch(job) {
       if (!job || job.job_type !== "openai_batch" || !job.batch_id) {
@@ -1890,6 +2265,8 @@
         a.style.color = "#9cf";
         a.textContent = `Open ${formatMode(item.mode).toLowerCase()} detail page`;
         link.appendChild(a);
+
+
         itemDiv.appendChild(link);
       }
 
@@ -1937,8 +2314,46 @@
       }
     }
 
+    function applyGallerySearch() {
+      const input = document.getElementById("gallerySearch");
+      gallerySearchQuery = input ? input.value.trim() : "";
+      localStorage.setItem("sora_gallery_search_query", gallerySearchQuery);
+      galleryPage = 1;
+      refreshOutputs().catch(error => console.warn("Could not search videos:", error));
+    }
+
+    function clearGallerySearch() {
+      const input = document.getElementById("gallerySearch");
+      if (input) {
+        input.value = "";
+      }
+      gallerySearchQuery = "";
+      localStorage.removeItem("sora_gallery_search_query");
+      galleryPage = 1;
+      refreshOutputs().catch(error => console.warn("Could not clear search:", error));
+    }
+
+    function handleGallerySearchKey(event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyGallerySearch();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearGallerySearch();
+      }
+    }
+
+    function restoreGallerySearchBox() {
+      const input = document.getElementById("gallerySearch");
+      if (input) {
+        input.value = gallerySearchQuery;
+      }
+    }
+
     function setGalleryTab(tab) {
       currentGalleryTab = tab;
+      galleryPage = 1;
 
       ["main", "favorites", "archive"].forEach(name => {
         const tabButton = document.getElementById(`tab-${name}`);
@@ -1947,11 +2362,12 @@
         }
       });
 
-      renderOutputs(allVideos);
       refreshOutputs().catch(error => console.warn("Could not refresh videos for tab switch:", error));
     }
 
     function videosForCurrentTab(videos) {
+      // Server pagination already filters by tab. This fallback is only for the
+      // server-rendered first paint before /api/videos returns.
       if (currentGalleryTab === "favorites") {
         return videos.filter(video => video.favorite && !video.archived);
       }
@@ -2079,7 +2495,13 @@
     }
 
     async function refreshOutputs() {
-      const response = await fetch("/api/videos", { cache: "no-store" });
+      const params = new URLSearchParams({
+        tab: currentGalleryTab,
+        page: String(galleryPage),
+        per_page: "40",
+        q: gallerySearchQuery
+      });
+      const response = await fetch(`/api/videos?${params.toString()}`, { cache: "no-store" });
       const data = await response.json();
 
       if (!response.ok) {
@@ -2087,7 +2509,113 @@
       }
 
       allVideos = Array.isArray(data.videos) ? data.videos : [];
+      galleryPagination = data.pagination || { page: 1, total_pages: 1, total: allVideos.length };
+      galleryPage = galleryPagination.page || galleryPage;
       renderOutputs(allVideos);
+      renderOutputsPagination();
+    }
+
+    function renderOutputsPagination() {
+      const container = document.getElementById("outputsPagination");
+      if (!container) {
+        return;
+      }
+
+      const page = galleryPagination.page || 1;
+      const totalPages = galleryPagination.total_pages || 1;
+      const total = galleryPagination.total || 0;
+      container.innerHTML = "";
+
+      const prev = document.createElement("button");
+      prev.type = "button";
+      prev.className = "small-button";
+      prev.textContent = "Previous";
+      prev.disabled = page <= 1;
+      prev.onclick = () => {
+        galleryPage = Math.max(1, page - 1);
+        refreshOutputs();
+      };
+
+      const label = document.createElement("div");
+      label.className = "meta";
+      label.textContent = `Page ${page} of ${totalPages} • ${total} result${total === 1 ? "" : "s"}${gallerySearchQuery ? ` matching “${gallerySearchQuery}”` : ""}`;
+
+      const next = document.createElement("button");
+      next.type = "button";
+      next.className = "small-button";
+      next.textContent = "Next";
+      next.disabled = page >= totalPages;
+      next.onclick = () => {
+        galleryPage = Math.min(totalPages, page + 1);
+        refreshOutputs();
+      };
+
+      container.appendChild(prev);
+      container.appendChild(label);
+      container.appendChild(next);
+    }
+
+    async function retryResult(event, filename) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const response = await fetch(`/api/video-info/${encodeURIComponent(filename)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Could not load video settings for retry.");
+        return;
+      }
+
+      const video = data.video || {};
+      if ((video.source_mode === "remix" || video.source_mode === "extend") && video.source_filename) {
+        window.location.href = `/video/${encodeURIComponent(video.source_filename)}`;
+        return;
+      }
+
+      localStorage.setItem("sora_retry_payload", JSON.stringify({
+        prompt: video.prompt || video.prompt_preview || "",
+        model: video.model || "sora-2",
+        seconds: video.seconds || "4",
+        size: video.size || "720x1280",
+        preset_id: "",
+        preset_name: "",
+        preset_template: ""
+      }));
+      window.location.href = "/";
+    }
+
+    function applyPendingRetryPayload() {
+      const raw = localStorage.getItem("sora_retry_payload");
+      if (!raw) {
+        return;
+      }
+      localStorage.removeItem("sora_retry_payload");
+
+      try {
+        const payload = JSON.parse(raw);
+        document.getElementById("prompt").value = payload.prompt || "";
+        document.getElementById("model").value = payload.model || "sora-2";
+        document.getElementById("size").value = payload.size || "720x1280";
+
+        const presetSeconds = document.getElementById("preset_seconds");
+        const customSeconds = document.getElementById("custom_seconds");
+        const presetValues = ["4", "8", "12", "16", "20"];
+        if (presetValues.includes(String(payload.seconds || "4"))) {
+          presetSeconds.value = String(payload.seconds || "4");
+          customSeconds.value = "";
+        } else {
+          customSeconds.value = String(payload.seconds || "4");
+        }
+
+        const promptPreset = document.getElementById("promptPreset");
+        if (promptPreset) {
+          promptPreset.value = payload.preset_id || "";
+        }
+        updateBudgetEstimate();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (error) {
+        console.warn("Could not restore retry payload:", error);
+      }
     }
 
     async function togglePin(event, filename, pinned) {
@@ -2337,6 +2865,8 @@
     async function initApp() {
       loadJobsPanelState();
       await loadPresets();
+      restoreGallerySearchBox();
+      applyPendingRetryPayload();
       loadQueueFromLocalStorage();
       loadBatchModeFromLocalStorage();
       renderQueue();
@@ -2362,6 +2892,12 @@
       } catch (error) {
         console.warn("Budget load failed:", error);
         updateBudgetEstimate();
+      }
+
+      try {
+        await fetch("/api/jobs/recover", { method: "POST", cache: "no-store" });
+      } catch (error) {
+        console.warn("Job recovery check failed:", error);
       }
 
       try {

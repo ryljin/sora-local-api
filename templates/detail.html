@@ -355,6 +355,7 @@
     <button type="button" id="pinButton" class="secondary" onclick="togglePin()">{{ 'Unpin video' if video.pinned else 'Pin video' }}</button>
     <button type="button" id="favoriteButton" class="secondary" onclick="toggleFavorite()">{{ 'Remove favorite' if video.favorite else 'Favorite video' }}</button>
     <button type="button" id="archiveButton" class="secondary" onclick="toggleArchive()">{{ 'Unarchive video' if video.archived else 'Archive video' }}</button>
+    <button type="button" id="retryButton" class="secondary" onclick="retryCurrentVideo()">Retry</button>
   </div>
 
   <h1>{{ video.filename }}</h1>
@@ -504,7 +505,13 @@
 
     const sourceVideoId = {{ (video.video_id or "")|tojson }};
     const sourceFilename = {{ video.filename|tojson }};
+    const currentFilename = {{ video.filename|tojson }};
     const currentPrompt = {{ (video.prompt or "")|tojson }};
+    const currentModel = {{ (video.model or "sora-2")|tojson }};
+    const currentSeconds = {{ (video.seconds or "4")|tojson }};
+    const currentSize = {{ (video.size or "720x1280")|tojson }};
+    const currentSourceMode = {{ (video.source_mode or "")|tojson }};
+    const currentSourceFilename = {{ (video.source_filename or "")|tojson }};
     let currentPinned = {{ 'true' if video.pinned else 'false' }};
     let currentFavorite = {{ 'true' if video.favorite else 'false' }};
     let currentArchived = {{ 'true' if video.archived else 'false' }};
@@ -703,6 +710,67 @@
       await saveBudget(Math.max(0, remaining - amount));
     }
 
+
+    function retryCurrentVideo() {
+      if ((currentSourceMode === "remix" || currentSourceMode === "extend") && currentSourceFilename) {
+        localStorage.setItem("sora_detail_retry_payload", JSON.stringify({
+          mode: currentSourceMode,
+          prompt: currentPrompt || "",
+          model: currentModel || "sora-2",
+          seconds: currentSeconds || "4",
+          size: currentSize || "720x1280",
+          preset_id: "",
+          preset_name: "",
+          preset_template: ""
+        }));
+        window.location.href = detailUrl(currentSourceFilename);
+        return;
+      }
+
+      localStorage.setItem("sora_retry_payload", JSON.stringify({
+        prompt: currentPrompt || "",
+        model: currentModel || "sora-2",
+        seconds: currentSeconds || "4",
+        size: currentSize || "720x1280",
+        preset_id: "",
+        preset_name: "",
+        preset_template: ""
+      }));
+      window.location.href = "/";
+    }
+
+    function applyPendingDetailRetryPayload() {
+      const raw = localStorage.getItem("sora_detail_retry_payload");
+      if (!raw) {
+        return;
+      }
+      localStorage.removeItem("sora_detail_retry_payload");
+
+      try {
+        const payload = JSON.parse(raw);
+        const mode = payload.mode === "extend" ? "extend" : "remix";
+        const promptField = document.getElementById(`${mode}Prompt`);
+        const modelField = document.getElementById(`${mode}Model`);
+        const secondsField = document.getElementById(`${mode}Seconds`);
+        const sizeField = document.getElementById(`${mode}Size`);
+        const presetField = document.getElementById(`${mode}Preset`);
+
+        if (promptField) promptField.value = payload.prompt || "";
+        if (modelField) modelField.value = payload.model || "sora-2";
+        if (secondsField) secondsField.value = payload.seconds || "4";
+        if (sizeField) sizeField.value = payload.size || "720x1280";
+        if (presetField && payload.preset_id) presetField.value = payload.preset_id;
+
+        updateActionCosts();
+
+        const targetPanel = promptField ? promptField.closest(".panel") : null;
+        if (targetPanel) {
+          targetPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      } catch (error) {
+        console.warn("Could not restore detail retry payload:", error);
+      }
+    }
 
     async function copyPrompt() {
       const button = document.getElementById("copyPromptButton");
@@ -929,7 +997,10 @@
         result.appendChild(prompt);
       }
     }
-    loadPresets();
+    loadPresets().then(() => {
+      applyPendingDetailRetryPayload();
+      updateActionCosts();
+    });
     loadBudget();
     updateActionCosts();
   </script>

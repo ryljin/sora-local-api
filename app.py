@@ -9,8 +9,11 @@ import subprocess
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
@@ -1172,6 +1175,137 @@ def get_recent_jobs():
     return copied_jobs
 
 
+
+
+def object_from_json(value):
+    if isinstance(value, dict):
+        return SimpleNamespace(**{key: object_from_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [object_from_json(item) for item in value]
+    return value
+
+
+def create_video_extension(source_video_id: str, prompt: str, seconds: str):
+    """Create a Sora video extension across OpenAI SDK versions.
+
+    Some openai-python versions expose this endpoint as client.videos.extend(...),
+    while older/local versions do not expose client.videos.extensions at all. The
+    final fallback calls POST /v1/videos/extensions directly and returns an
+    attribute-accessible object shaped like the normal SDK Video object.
+    """
+    source_video_id = (source_video_id or "").strip()
+    prompt = (prompt or "").strip()
+    seconds = str(seconds or "4").strip() or "4"
+
+    if not source_video_id:
+        raise ValueError("Missing source video ID for extend.")
+    if not prompt:
+        raise ValueError("Missing prompt for extend.")
+
+    video_ref = {"id": source_video_id}
+    attempts = []
+
+    videos_resource = getattr(client, "videos", None)
+
+    if videos_resource is not None and hasattr(videos_resource, "extend"):
+        attempts.append(
+            (
+                "client.videos.extend",
+                lambda: videos_resource.extend(
+                    prompt=prompt,
+                    seconds=seconds,
+                    video=video_ref,
+                ),
+            )
+        )
+
+    if videos_resource is not None and hasattr(videos_resource, "extend_"):
+        attempts.append(
+            (
+                "client.videos.extend_",
+                lambda: videos_resource.extend_(
+                    prompt=prompt,
+                    seconds=seconds,
+                    video=video_ref,
+                ),
+            )
+        )
+
+    extensions_resource = getattr(videos_resource, "extensions", None) if videos_resource is not None else None
+    if extensions_resource is not None and hasattr(extensions_resource, "create"):
+        attempts.append(
+            (
+                "client.videos.extensions.create object video",
+                lambda: extensions_resource.create(
+                    prompt=prompt,
+                    seconds=seconds,
+                    video=video_ref,
+                ),
+            )
+        )
+        attempts.append(
+            (
+                "client.videos.extensions.create string video",
+                lambda: extensions_resource.create(
+                    prompt=prompt,
+                    seconds=seconds,
+                    video=source_video_id,
+                ),
+            )
+        )
+
+    errors = []
+    for label, fn in attempts:
+        try:
+            return fn()
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set, and SDK extension helpers were unavailable.")
+
+    base_url = str(getattr(client, "base_url", "https://api.openai.com/v1")).rstrip("/")
+    url = f"{base_url}/videos/extensions"
+    body = json.dumps(
+        {
+            "prompt": prompt,
+            "seconds": seconds,
+            "video": video_ref,
+        }
+    ).encode("utf-8")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    organization = os.environ.get("OPENAI_ORG_ID") or os.environ.get("OPENAI_ORGANIZATION")
+    project = os.environ.get("OPENAI_PROJECT_ID") or os.environ.get("OPENAI_PROJECT")
+    if organization:
+        headers["OpenAI-Organization"] = organization
+    if project:
+        headers["OpenAI-Project"] = project
+
+    request_obj = urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(request_obj, timeout=120) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            return object_from_json(payload)
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        detail = f"Direct POST /v1/videos/extensions failed with HTTP {exc.code}: {error_text}"
+        if errors:
+            detail += "\nSDK attempts also failed:\n" + "\n".join(errors)
+        raise RuntimeError(detail) from exc
+    except Exception as exc:
+        detail = f"Direct POST /v1/videos/extensions failed: {exc}"
+        if errors:
+            detail += "\nSDK attempts also failed:\n" + "\n".join(errors)
+        raise RuntimeError(detail) from exc
+
+
 def create_or_continue_video(item):
     mode = item.get("mode", "generate")
     prompt = item["prompt"].strip()
@@ -1191,9 +1325,10 @@ def create_or_continue_video(item):
         if not source_video_id:
             raise ValueError("Missing source video ID for extend.")
 
-        return client.videos.extensions.create(
-            video=source_video_id,
+        return create_video_extension(
+            source_video_id=source_video_id,
             prompt=prompt,
+            seconds=str(item.get("seconds", "4")),
         )
 
     create_kwargs = {
@@ -2076,6 +2211,144 @@ def create_local_job(items, job_type="standard"):
     return job_id
 
 
+
+def prompt_matches_search(video: dict, query: str) -> bool:
+    query = (query or "").strip().lower()
+    if not query:
+        return True
+
+    haystack_parts = [
+        video.get("prompt") or "",
+        video.get("prompt_preview") or "",
+        video.get("filename") or "",
+        video.get("preset_name") or "",
+        video.get("source_filename") or "",
+        video.get("input_reference_name") or "",
+    ]
+    haystack = " ".join(str(part).lower() for part in haystack_parts if part)
+    words = [word for word in re.split(r"\s+", query) if word]
+    return all(word in haystack for word in words)
+
+
+def filtered_videos_for_tab(tab: str, query: str = ""):
+    tab = (tab or "main").strip().lower()
+    videos = get_local_videos(include_full_prompt=True)
+
+    if tab == "favorites":
+        values = [video for video in videos if video.get("favorite") and not video.get("archived")]
+    elif tab == "archive":
+        values = [video for video in videos if video.get("archived")]
+    else:
+        values = [video for video in videos if not video.get("archived")]
+
+    values = [video for video in values if prompt_matches_search(video, query)]
+
+    for video in values:
+        video["prompt_preview"] = video.get("prompt", "")[:350]
+        video.pop("prompt", None)
+
+    return values
+
+
+def paginate_list(values, page=1, per_page=40):
+    try:
+        page = int(page)
+    except Exception:
+        page = 1
+
+    try:
+        per_page = int(per_page)
+    except Exception:
+        per_page = 40
+
+    page = max(1, page)
+    per_page = max(1, min(per_page, 100))
+    total = len(values)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * per_page
+    end = start + per_page
+    return values[start:end], {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+    }
+
+
+def job_has_missing_outputs(job: dict) -> bool:
+    return any(isinstance(item, dict) and not item.get("filename") for item in job.get("items", []))
+
+
+def job_has_error(job: dict) -> bool:
+    if job.get("error"):
+        return True
+    if job.get("status") in {"failed", "completed_with_errors", "expired", "cancelled", "interrupted"}:
+        return True
+    return any(isinstance(item, dict) and (item.get("status") == "failed" or item.get("error")) for item in job.get("items", []))
+
+
+def job_is_active(job: dict) -> bool:
+    status = job.get("status") or ""
+    if status in TERMINAL_JOB_STATUSES or status in {"completed_with_errors"}:
+        return False
+    return True
+
+
+def notification_jobs():
+    values = get_recent_jobs()
+    return [job for job in values if job_is_active(job) or job_has_error(job)]
+
+
+def auto_recover_jobs_once():
+    started = []
+    with jobs_lock:
+        candidates = list(jobs.values())
+
+    for job in candidates:
+        job_id = job.get("job_id")
+        if not job_id:
+            continue
+        if not job_has_missing_outputs(job):
+            continue
+
+        status = job.get("status")
+        if status not in {"interrupted", "queued_resume", "failed", "completed_with_errors"}:
+            continue
+
+        if job.get("job_type") == "openai_batch" and job.get("batch_id"):
+            with jobs_lock:
+                live_job = jobs.get(job_id)
+                if not live_job or live_job.get("status") not in {"interrupted", "failed", "completed_with_errors", "queued_resume"}:
+                    continue
+                live_job["status"] = "queued_resume"
+                live_job["error"] = None
+                save_jobs_snapshot_unlocked()
+            thread = threading.Thread(target=run_openai_batch_job, args=(job_id, job.get("items", []), job.get("batch_id")), daemon=True)
+            thread.start()
+            started.append(job_id)
+            continue
+
+        if job.get("job_type") != "openai_batch":
+            has_video_id = any(item.get("video_id") for item in job.get("items", []) if isinstance(item, dict) and not item.get("filename"))
+            if has_video_id:
+                with jobs_lock:
+                    live_job = jobs.get(job_id)
+                    if not live_job or live_job.get("status") not in {"interrupted", "failed", "completed_with_errors", "queued_resume"}:
+                        continue
+                    live_job["status"] = "queued_resume"
+                    live_job["error"] = None
+                    save_jobs_snapshot_unlocked()
+                thread = threading.Thread(target=run_resume_standard_job, args=(job_id,), daemon=True)
+                thread.start()
+                started.append(job_id)
+
+    return started
+
+
 with jobs_lock:
     jobs.update(load_persisted_jobs())
 
@@ -2084,7 +2357,7 @@ start_thumbnail_cache_warmer()
 
 @app.route("/")
 def index():
-    return render_template("index.html", videos=get_local_videos())
+    return render_template("index.html", videos=get_local_videos()[:40])
 
 
 @app.route("/video/<path:filename>")
@@ -2395,12 +2668,44 @@ def api_job(job_id):
 
 @app.route("/api/jobs")
 def api_jobs():
-    return jsonify({"jobs": get_recent_jobs()})
+    return jsonify({"jobs": notification_jobs(), "mode": "notifications"})
+
+
+@app.route("/api/jobs/log")
+def api_jobs_log():
+    page = request.args.get("page", "1")
+    per_page = request.args.get("per_page", "20")
+    values, pagination = paginate_list(get_recent_jobs(), page, per_page)
+    return jsonify({"jobs": values, "pagination": pagination})
+
+
+@app.route("/api/jobs/recover", methods=["POST"])
+def api_recover_jobs():
+    started = auto_recover_jobs_once()
+    return jsonify({"ok": True, "started": started, "count": len(started)})
 
 
 @app.route("/api/videos")
 def api_videos():
-    return jsonify({"videos": get_local_videos()})
+    tab = request.args.get("tab", "main")
+    query = request.args.get("q", "")
+    page = request.args.get("page", "1")
+    per_page = request.args.get("per_page", "40")
+    values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    return jsonify({"videos": values, "pagination": pagination, "tab": tab, "q": query})
+
+
+@app.route("/api/video-info/<path:filename>")
+def api_video_info(filename):
+    try:
+        path = safe_output_path(filename)
+    except ValueError:
+        return jsonify({"error": "Invalid filename."}), 400
+
+    if not path.exists() or path.suffix.lower() != ".mp4":
+        return jsonify({"error": "Video not found."}), 404
+
+    return jsonify({"video": read_metadata(filename)})
 
 
 @app.route("/api/pins")
