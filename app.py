@@ -1185,95 +1185,51 @@ def object_from_json(value):
     return value
 
 
-def create_video_extension(source_video_id: str, prompt: str, seconds: str):
-    """Create a Sora video extension across OpenAI SDK versions.
+def normalize_extension_seconds(seconds) -> str:
+    """Validate the number of seconds requested for an extension segment."""
+    value = str(seconds or "4").strip() or "4"
+    allowed = {"4", "8", "12", "16", "20"}
+    if value not in allowed:
+        raise ValueError("Extension seconds must be one of: 4, 8, 12, 16, or 20.")
+    return value
 
-    Some openai-python versions expose this endpoint as client.videos.extend(...),
-    while older/local versions do not expose client.videos.extensions at all. The
-    final fallback calls POST /v1/videos/extensions directly and returns an
-    attribute-accessible object shaped like the normal SDK Video object.
+
+def create_video_extension(source_video_id: str, prompt: str, seconds: str):
+    """Create a Sora video extension using the stable REST endpoint.
+
+    The supported OpenAI endpoint is POST /v1/videos/extensions with a JSON
+    body shaped as {"prompt": ..., "seconds": ..., "video": {"id": ...}}.
+    Calling the REST endpoint directly avoids SDK-version drift such as
+    openai-python builds that do not expose client.videos.extend(...) yet, or
+    older local builds where client.videos.extensions is missing.
     """
     source_video_id = (source_video_id or "").strip()
     prompt = (prompt or "").strip()
-    seconds = str(seconds or "4").strip() or "4"
+    seconds = normalize_extension_seconds(seconds)
 
     if not source_video_id:
         raise ValueError("Missing source video ID for extend.")
+    if not source_video_id.startswith("video_"):
+        raise ValueError(f"Invalid source video ID for extend: {source_video_id}")
     if not prompt:
         raise ValueError("Missing prompt for extend.")
 
-    video_ref = {"id": source_video_id}
-    attempts = []
-
-    videos_resource = getattr(client, "videos", None)
-
-    if videos_resource is not None and hasattr(videos_resource, "extend"):
-        attempts.append(
-            (
-                "client.videos.extend",
-                lambda: videos_resource.extend(
-                    prompt=prompt,
-                    seconds=seconds,
-                    video=video_ref,
-                ),
-            )
-        )
-
-    if videos_resource is not None and hasattr(videos_resource, "extend_"):
-        attempts.append(
-            (
-                "client.videos.extend_",
-                lambda: videos_resource.extend_(
-                    prompt=prompt,
-                    seconds=seconds,
-                    video=video_ref,
-                ),
-            )
-        )
-
-    extensions_resource = getattr(videos_resource, "extensions", None) if videos_resource is not None else None
-    if extensions_resource is not None and hasattr(extensions_resource, "create"):
-        attempts.append(
-            (
-                "client.videos.extensions.create object video",
-                lambda: extensions_resource.create(
-                    prompt=prompt,
-                    seconds=seconds,
-                    video=video_ref,
-                ),
-            )
-        )
-        attempts.append(
-            (
-                "client.videos.extensions.create string video",
-                lambda: extensions_resource.create(
-                    prompt=prompt,
-                    seconds=seconds,
-                    video=source_video_id,
-                ),
-            )
-        )
-
-    errors = []
-    for label, fn in attempts:
-        try:
-            return fn()
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
-
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set, and SDK extension helpers were unavailable.")
+        raise RuntimeError("OPENAI_API_KEY is not set.")
 
     base_url = str(getattr(client, "base_url", "https://api.openai.com/v1")).rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
+
     url = f"{base_url}/videos/extensions"
-    body = json.dumps(
-        {
-            "prompt": prompt,
-            "seconds": seconds,
-            "video": video_ref,
-        }
-    ).encode("utf-8")
+    payload = {
+        "prompt": prompt,
+        "seconds": seconds,
+        "video": {
+            "id": source_video_id,
+        },
+    }
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -1287,24 +1243,36 @@ def create_video_extension(source_video_id: str, prompt: str, seconds: str):
     if project:
         headers["OpenAI-Project"] = project
 
-    request_obj = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    request_obj = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
 
     try:
         with urllib.request.urlopen(request_obj, timeout=120) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return object_from_json(payload)
+            response_text = response.read().decode("utf-8")
+            response_payload = json.loads(response_text)
     except urllib.error.HTTPError as exc:
         error_text = exc.read().decode("utf-8", errors="replace")
-        detail = f"Direct POST /v1/videos/extensions failed with HTTP {exc.code}: {error_text}"
-        if errors:
-            detail += "\nSDK attempts also failed:\n" + "\n".join(errors)
-        raise RuntimeError(detail) from exc
+        raise RuntimeError(
+            "Extend request failed. The app sent POST /v1/videos/extensions with "
+            f"source video {source_video_id} and {seconds}s. OpenAI returned HTTP {exc.code}: {error_text}"
+        ) from exc
     except Exception as exc:
-        detail = f"Direct POST /v1/videos/extensions failed: {exc}"
-        if errors:
-            detail += "\nSDK attempts also failed:\n" + "\n".join(errors)
-        raise RuntimeError(detail) from exc
+        raise RuntimeError(
+            f"Extend request failed before OpenAI returned a video job: {exc}"
+        ) from exc
 
+    video = object_from_json(response_payload)
+    if not getattr(video, "id", None):
+        raise RuntimeError(
+            "Extend request returned without a video id. Raw response: "
+            + json.dumps(response_payload, ensure_ascii=False)
+        )
+
+    return video
 
 def create_or_continue_video(item):
     mode = item.get("mode", "generate")
@@ -2230,6 +2198,68 @@ def prompt_matches_search(video: dict, query: str) -> bool:
     return all(word in haystack for word in words)
 
 
+def start_thumbnail_cache_for_filenames(filenames):
+    """Generate cached thumbnails only for the filenames currently needed by the UI.
+
+    This avoids scanning/regenerating every output on each app start. Existing JPGs
+    in outputs/thumbnails are reused forever unless manually deleted.
+    """
+    missing = []
+    seen = set()
+
+    for filename in filenames or []:
+        if not filename or filename in seen:
+            continue
+        seen.add(filename)
+        try:
+            path = safe_output_path(filename)
+        except ValueError:
+            continue
+        if not path.exists() or path.suffix.lower() != ".mp4":
+            continue
+        if not cached_thumbnail(filename):
+            missing.append(filename)
+
+    if not missing:
+        return False
+
+    def worker(values):
+        with thumbnail_lock:
+            thumbnail_state.update({
+                "running": True,
+                "total": len(values),
+                "done": 0,
+                "failed": 0,
+                "generated": 0,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "completed_at": "",
+                "mode": "page",
+            })
+
+        try:
+            for filename in values:
+                before = cached_thumbnail(filename)
+                after = generate_thumbnail_once(filename)
+                with thumbnail_lock:
+                    thumbnail_state["done"] += 1
+                    if after and not before:
+                        thumbnail_state["generated"] += 1
+                    elif not after:
+                        thumbnail_state["failed"] += 1
+        finally:
+            with thumbnail_lock:
+                thumbnail_state["running"] = False
+                thumbnail_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+
+    with thumbnail_lock:
+        if thumbnail_state.get("running"):
+            return False
+        thumbnail_state["running"] = True
+
+    threading.Thread(target=worker, args=(missing,), daemon=True).start()
+    return True
+
+
 def filtered_videos_for_tab(tab: str, query: str = ""):
     tab = (tab or "main").strip().lower()
     videos = get_local_videos(include_full_prompt=True)
@@ -2352,7 +2382,6 @@ def auto_recover_jobs_once():
 with jobs_lock:
     jobs.update(load_persisted_jobs())
 
-start_thumbnail_cache_warmer()
 
 
 @app.route("/")
@@ -2692,6 +2721,7 @@ def api_videos():
     page = request.args.get("page", "1")
     per_page = request.args.get("per_page", "40")
     values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    start_thumbnail_cache_for_filenames([video.get("filename") for video in values])
     return jsonify({"videos": values, "pagination": pagination, "tab": tab, "q": query})
 
 
@@ -2792,8 +2822,9 @@ def output_thumbnail(filename):
 
 @app.route("/api/thumbnails/generate", methods=["POST"])
 def api_generate_thumbnails():
-    started = start_thumbnail_cache_warmer()
-    return jsonify({"ok": True, "started": started, "thumbnail_status": get_thumbnail_status()})
+    # Legacy endpoint kept for compatibility. Thumbnail generation is now page-scoped
+    # and starts from /api/videos for the currently displayed paginated results.
+    return jsonify({"ok": True, "started": False, "thumbnail_status": get_thumbnail_status()})
 
 
 @app.route("/api/thumbnails/status")

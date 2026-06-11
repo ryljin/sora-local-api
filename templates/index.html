@@ -738,6 +738,54 @@
         margin-bottom: 18px;
       }
     }
+
+
+    .confirm-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 10000;
+      padding: 20px;
+    }
+
+    .confirm-overlay.visible {
+      display: flex;
+    }
+
+    .confirm-card {
+      width: min(420px, 100%);
+      background: #161616;
+      border: 1px solid #444;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    .confirm-title {
+      font-weight: bold;
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .confirm-message {
+      color: #cfcfcf;
+      font-size: 14px;
+      line-height: 1.45;
+      margin-bottom: 16px;
+    }
+
+    .confirm-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .confirm-actions button {
+      margin-top: 0;
+    }
   </style>
 </head>
 <body>
@@ -936,6 +984,19 @@
     {% endfor %}
   </div>
   <div class="pagination-row" id="outputsPagination"></div>
+
+
+
+  <div class="confirm-overlay" id="batchConfirmOverlay" aria-hidden="true">
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="batchConfirmTitle">
+      <div class="confirm-title" id="batchConfirmTitle">Send OpenAI Batch?</div>
+      <div class="confirm-message">Batch can take up to 24 hours. Completed items may still be charged if cancelled later.</div>
+      <div class="confirm-actions">
+        <button type="button" class="secondary" id="batchConfirmCancel">Cancel</button>
+        <button type="button" id="batchConfirmSend">Send Batch</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const PRICE_PER_SECOND = {
@@ -1680,7 +1741,10 @@
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ items })
+        body: JSON.stringify({
+          items,
+          batch_warning_confirmed: true
+        })
       });
 
       const data = await response.json();
@@ -1720,19 +1784,49 @@
       }
     }
 
+    function confirmBatchSubmission() {
+      return new Promise(resolve => {
+        const overlay = document.getElementById("batchConfirmOverlay");
+        const cancelButton = document.getElementById("batchConfirmCancel");
+        const sendButton = document.getElementById("batchConfirmSend");
+
+        const close = value => {
+          overlay.classList.remove("visible");
+          overlay.setAttribute("aria-hidden", "true");
+          cancelButton.onclick = null;
+          sendButton.onclick = null;
+          document.removeEventListener("keydown", onKeyDown);
+          resolve(value);
+        };
+
+        const onKeyDown = event => {
+          if (event.key === "Escape") {
+            close(false);
+          }
+        };
+
+        cancelButton.onclick = () => close(false);
+        sendButton.onclick = () => close(true);
+        document.addEventListener("keydown", onKeyDown);
+        overlay.classList.add("visible");
+        overlay.setAttribute("aria-hidden", "false");
+        sendButton.focus();
+      });
+    }
+
     async function sendBatch() {
       if (batchQueue.length === 0) {
         alert("Batch queue is empty.");
         return;
       }
 
-      const cost = estimateItemsCost(batchQueue, "batch");
+      const confirmed = await confirmBatchSubmission();
 
-      const confirmed = confirm(`Send this queue through OpenAI Batch API? Estimated cost: ${money(cost)}. This uses the discounted offline batch path and can take up to 24 hours.`);
       if (!confirmed) {
         return;
       }
 
+      const cost = estimateItemsCost(batchQueue, "batch");
       const submitted = await startOpenAIBatch(batchQueue);
 
       if (submitted) {
@@ -2770,7 +2864,14 @@
 
       let response;
       try {
-        response = await fetch("/api/thumbnails/missing?limit=80", { cache: "no-store" });
+        const params = new URLSearchParams({
+          limit: "40",
+          tab: currentGalleryTab,
+          page: String(galleryPage),
+          per_page: "40",
+          q: gallerySearchQuery
+        });
+        response = await fetch(`/api/thumbnails/missing?${params.toString()}`, { cache: "no-store" });
       } catch (error) {
         console.warn("Could not check missing thumbnails:", error);
         return;
@@ -2833,28 +2934,16 @@
     }
 
     async function startThumbnailCacheAndRefresh() {
-      try {
-        const response = await fetch("/api/thumbnails/generate", { method: "POST", cache: "no-store" });
-        const data = await response.json();
-        const status = data.thumbnail_status || {};
-
-        if (status.last_error) {
-          console.warn("Thumbnail cache warning:", status.last_error);
-        }
-      } catch (error) {
-        console.warn("Could not start thumbnail cache warmer:", error);
-      }
-
       await loadThumbnailStatus();
 
-      // Server-side ffmpeg remains the first attempt. Browser fallback then captures
-      // one video frame at a time and uploads a cached JPG, so thumbnails still get
-      // created on machines where ffmpeg is missing, not on PATH, or blocked.
+      // /api/videos starts thumbnail caching only for the current paginated page.
+      // If ffmpeg cannot create one, the browser fallback captures only missing
+      // thumbnails from this same visible page and saves them permanently.
       setTimeout(() => {
         generateMissingThumbnailsInBrowser().catch(error => console.warn("Browser thumbnail fallback failed:", error));
       }, 1500);
 
-      [3000, 9000, 18000, 45000, 90000].forEach(delay => {
+      [3000, 9000, 18000].forEach(delay => {
         setTimeout(async () => {
           await loadThumbnailStatus();
           await refreshOutputs().catch(error => console.warn("Thumbnail refresh failed:", error));
