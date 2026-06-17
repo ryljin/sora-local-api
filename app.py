@@ -41,6 +41,8 @@ video_index_cache = {
     "signature": None,
     "videos": [],
     "built_at": None,
+    "dirty": True,
+    "last_disk_check": 0.0,
 }
 
 pins_lock = threading.Lock()
@@ -77,6 +79,7 @@ thumbnail_state = {
 TERMINAL_JOB_STATUSES = {"completed", "completed_with_errors", "failed", "expired", "cancelled", "interrupted"}
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled"}
 NON_CANCELLABLE_LOCAL_BATCH_STATUSES = TERMINAL_JOB_STATUSES | {"processing_batch_output"}
+GALLERY_DISK_RESCAN_SECONDS = 30
 
 
 
@@ -946,7 +949,6 @@ def mark_viewed(filename: str):
     viewed = load_views()
     viewed.add(filename)
     save_views(viewed)
-    invalidate_video_index()
     return True
 
 
@@ -975,7 +977,6 @@ def set_pin(filename: str, pinned: bool):
         pins.discard(filename)
 
     save_pins(pins)
-    invalidate_video_index()
     return filename in pins
 
 
@@ -992,7 +993,6 @@ def set_favorite(filename: str, favorite: bool):
         favorites.discard(filename)
 
     save_favorites(favorites)
-    invalidate_video_index()
     return filename in favorites
 
 
@@ -1009,7 +1009,6 @@ def set_archived(filename: str, archived: bool):
         archive.discard(filename)
 
     save_archive(archive)
-    invalidate_video_index()
     return filename in archive
 
 
@@ -1032,7 +1031,7 @@ def find_filename_by_video_id(video_id: str):
     return None
 
 
-def read_metadata(video_filename: str, state_sets=None):
+def read_metadata(video_filename: str, state_sets=None, resolve_source: bool = True):
     video_path = safe_output_path(video_filename)
     metadata_path = video_path.with_suffix(".txt")
 
@@ -1121,7 +1120,7 @@ def read_metadata(video_filename: str, state_sets=None):
 
     data["prompt"] = "\n".join(prompt_lines).strip()
 
-    if data["source_video_id"]:
+    if resolve_source and data["source_video_id"]:
         source_path = OUTPUT_DIR / data["source_filename"] if data["source_filename"] else None
 
         if not data["source_filename"] or not source_path.exists():
@@ -1173,11 +1172,11 @@ def save_rich_metadata(
 
 
 def get_outputs_signature():
-    """Cheaply identify when gallery data needs a rebuild.
+    """Identify file/metadata changes without touching thumbnails or UI state files.
 
-    This stats output videos, metadata sidecars, cached thumbnails, and small
-    state JSON files. It avoids re-reading every prompt/metadata file on every
-    page/filter/search request.
+    This is deliberately limited to .mp4 files and their .txt sidecars. Pins,
+    favorites, archive, viewed status, and thumbnail availability are applied at
+    request time, so they should not force a full metadata re-index.
     """
     parts = []
 
@@ -1189,36 +1188,32 @@ def get_outputs_signature():
             except FileNotFoundError:
                 continue
 
-    for state_path in (PINS_FILE, FAVORITES_FILE, ARCHIVE_FILE, VIEWS_FILE):
-        try:
-            stat = state_path.stat()
-            parts.append((state_path.name, stat.st_mtime_ns, stat.st_size))
-        except FileNotFoundError:
-            parts.append((state_path.name, 0, 0))
-
-    try:
-        thumb_parts = []
-        for path in THUMBNAIL_DIR.glob("*.jpg"):
-            try:
-                stat = path.stat()
-                thumb_parts.append((path.name, stat.st_mtime_ns, stat.st_size))
-            except FileNotFoundError:
-                continue
-        parts.append(("__thumbs__", hash(tuple(sorted(thumb_parts))), len(thumb_parts)))
-    except Exception:
-        pass
-
     return tuple(sorted(parts))
 
 
-def build_video_index():
-    state_sets = {
+def runtime_state_sets():
+    return {
         "pins": load_pins(),
         "favorites": load_favorites(),
         "archive": load_archive(),
         "views": load_views(),
     }
 
+
+def apply_runtime_video_state(video: dict, state_sets=None):
+    state_sets = state_sets or runtime_state_sets()
+    filename = video.get("filename") or ""
+    enriched = dict(video)
+    enriched["pinned"] = filename in state_sets.get("pins", set())
+    enriched["favorite"] = filename in state_sets.get("favorites", set())
+    enriched["archived"] = filename in state_sets.get("archive", set())
+    enriched["viewed"] = filename in state_sets.get("views", set())
+    enriched["is_new"] = not enriched["viewed"]
+    enriched["thumbnail"] = cached_thumbnail(filename)
+    return enriched
+
+def build_video_index():
+    empty_state_sets = {"pins": set(), "favorites": set(), "archive": set(), "views": set()}
     values = []
 
     for path in OUTPUT_DIR.glob("*.mp4"):
@@ -1228,7 +1223,7 @@ def build_video_index():
             continue
 
         try:
-            video = read_metadata(path.name, state_sets=state_sets)
+            video = read_metadata(path.name, state_sets=empty_state_sets, resolve_source=False)
         except Exception:
             continue
 
@@ -1247,32 +1242,56 @@ def build_video_index():
         video.pop("prompt", None)
         values.append(video)
 
-    values.sort(
-        key=lambda video: (
-            1 if video.get("pinned") else 0,
-            video.get("mtime", 0),
-        ),
-        reverse=True,
-    )
+    id_to_filename = {
+        video.get("video_id"): video.get("filename")
+        for video in values
+        if video.get("video_id") and video.get("filename")
+    }
+    for video in values:
+        if video.get("source_video_id") and not video.get("source_filename"):
+            video["source_filename"] = id_to_filename.get(video.get("source_video_id"), "")
+            if video.get("source_filename"):
+                video["_search_text"] = f'{video.get("_search_text", "")} {video["source_filename"]}'.lower()
+
+    values.sort(key=lambda video: video.get("mtime", 0), reverse=True)
 
     return values
 
 
-def invalidate_video_index():
+def invalidate_video_index(files_changed: bool = True):
+    # Most UI state changes no longer need a metadata rebuild. Use
+    # files_changed=False for pins/favorites/archive/viewed changes if you want
+    # to make the intent explicit. Existing callers remain safe.
     with video_index_lock:
-        video_index_cache["signature"] = None
+        if files_changed:
+            video_index_cache["dirty"] = True
+            video_index_cache["signature"] = None
 
 
-def get_video_index():
-    signature = get_outputs_signature()
+def get_video_index(force_disk_check: bool = False):
+    now = time.monotonic()
 
     with video_index_lock:
-        if video_index_cache.get("signature") != signature:
-            video_index_cache["signature"] = signature
-            video_index_cache["videos"] = build_video_index()
-            video_index_cache["built_at"] = datetime.now().isoformat(timespec="seconds")
-        return [dict(video) for video in video_index_cache.get("videos", [])]
+        should_check_disk = (
+            force_disk_check
+            or video_index_cache.get("dirty", True)
+            or video_index_cache.get("signature") is None
+            or (now - float(video_index_cache.get("last_disk_check") or 0)) >= GALLERY_DISK_RESCAN_SECONDS
+        )
 
+        if should_check_disk:
+            signature = get_outputs_signature()
+            video_index_cache["last_disk_check"] = now
+            if video_index_cache.get("signature") != signature or video_index_cache.get("dirty", True):
+                video_index_cache["signature"] = signature
+                video_index_cache["videos"] = build_video_index()
+                video_index_cache["built_at"] = datetime.now().isoformat(timespec="seconds")
+                video_index_cache["dirty"] = False
+
+        base_videos = list(video_index_cache.get("videos", []))
+
+    state_sets = runtime_state_sets()
+    return [apply_runtime_video_state(video, state_sets) for video in base_videos]
 
 def get_local_videos(include_full_prompt: bool = False):
     if not include_full_prompt:
@@ -2426,13 +2445,15 @@ def filtered_videos_for_tab(tab: str, query: str = ""):
             if all(word in video.get("_search_text", "") for word in words)
         ]
 
-    clean_values = []
-    for video in values:
-        clean = dict(video)
-        clean.pop("_search_text", None)
-        clean_values.append(clean)
+    values.sort(
+        key=lambda video: (
+            1 if video.get("pinned") else 0,
+            video.get("mtime", 0),
+        ),
+        reverse=True,
+    )
 
-    return clean_values
+    return values
 
 
 def child_videos_for_source(source_filename: str, query: str = ""):
@@ -2465,14 +2486,22 @@ def child_videos_for_source(source_filename: str, query: str = ""):
             if all(word in video.get("_search_text", "") for word in words)
         ]
 
-    clean_values = []
-    for video in values:
-        clean = dict(video)
-        clean.pop("_search_text", None)
-        clean_values.append(clean)
+    values.sort(
+        key=lambda video: (
+            1 if video.get("pinned") else 0,
+            video.get("mtime", 0),
+        ),
+        reverse=True,
+    )
 
-    return clean_values
+    return values
 
+
+def public_gallery_video(video: dict):
+    clean = dict(video)
+    clean.pop("_search_text", None)
+    clean.pop("prompt", None)
+    return clean
 
 def paginate_list(values, page=1, per_page=40):
     try:
@@ -2914,9 +2943,10 @@ def api_videos():
     query = request.args.get("q", "")
     page = request.args.get("page", "1")
     per_page = request.args.get("per_page", "40")
-    values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
-    start_thumbnail_cache_for_filenames([video.get("filename") for video in values])
-    return jsonify({"videos": values, "pagination": pagination, "tab": tab, "q": query})
+    page_values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    start_thumbnail_cache_for_filenames([video.get("filename") for video in page_values])
+    videos = [public_gallery_video(video) for video in page_values]
+    return jsonify({"videos": videos, "pagination": pagination, "tab": tab, "q": query})
 
 
 @app.route("/api/video-children/<path:filename>")
@@ -2924,9 +2954,10 @@ def api_video_children(filename):
     query = request.args.get("q", "")
     page = request.args.get("page", "1")
     per_page = request.args.get("per_page", "24")
-    values, pagination = paginate_list(child_videos_for_source(filename, query), page, per_page)
-    start_thumbnail_cache_for_filenames([video.get("filename") for video in values])
-    return jsonify({"videos": values, "pagination": pagination, "filename": filename, "q": query})
+    page_values, pagination = paginate_list(child_videos_for_source(filename, query), page, per_page)
+    start_thumbnail_cache_for_filenames([video.get("filename") for video in page_values])
+    videos = [public_gallery_video(video) for video in page_values]
+    return jsonify({"videos": videos, "pagination": pagination, "filename": filename, "q": query})
 
 
 @app.route("/api/video-info/<path:filename>")
@@ -3039,12 +3070,29 @@ def api_thumbnail_status():
 @app.route("/api/thumbnails/missing")
 def api_missing_thumbnails():
     try:
-        limit = int(request.args.get("limit", "80"))
+        limit = int(request.args.get("limit", "40"))
     except Exception:
-        limit = 80
+        limit = 40
 
-    limit = max(1, min(limit, 250))
-    return jsonify({"missing": missing_thumbnail_filenames(limit=limit), "thumbnail_status": get_thumbnail_status()})
+    limit = max(1, min(limit, 80))
+    tab = request.args.get("tab", "main")
+    query = request.args.get("q", "")
+    page = request.args.get("page", "1")
+    per_page = request.args.get("per_page", "40")
+
+    # Browser fallback should only consider the current visible page. The old
+    # behavior scanned global missing thumbnails, which made search/tab/page
+    # changes feel slow once the library grew.
+    page_values, _pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    missing = []
+    for video in page_values:
+        filename = video.get("filename")
+        if filename and not cached_thumbnail(filename):
+            missing.append(filename)
+        if len(missing) >= limit:
+            break
+
+    return jsonify({"missing": missing, "thumbnail_status": get_thumbnail_status()})
 
 
 @app.route("/api/thumbnails/browser-upload", methods=["POST"])

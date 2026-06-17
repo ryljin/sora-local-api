@@ -1036,6 +1036,7 @@
     let galleryPage = 1;
     let galleryPagination = { page: 1, total_pages: 1, total: 0 };
     let gallerySearchQuery = localStorage.getItem("sora_gallery_search_query") || "";
+    let outputsRequestController = null;
     let expandedJobIds = new Set(JSON.parse(localStorage.getItem("sora_expanded_job_ids") || "[]"));
     let jobLogPage = 1;
     let jobLogPagination = { page: 1, total_pages: 1, total: 0 };
@@ -1567,7 +1568,63 @@
       await saveBudget(Math.max(0, remaining - amount));
     }
 
+    function getQueuePromptForDisplay(item) {
+      if (!item) {
+        return "";
+      }
+
+      return String(
+        item.raw_prompt ||
+        item.prompt ||
+        item.final_prompt ||
+        item.prompt_preview ||
+        ""
+      ).trim();
+    }
+
+    function normalizeQueueItem(item) {
+      const normalized = { ...(item || {}) };
+      const displayPrompt = getQueuePromptForDisplay(normalized);
+
+      // Older queue rows, retry rows, or rows created by a previous build can
+      // have only raw_prompt/final_prompt. The backend can still submit them,
+      // but the queue renderer used item.prompt directly, making them appear
+      // blank even though they would later send. Keep both fields populated.
+      if (!normalized.prompt && displayPrompt) {
+        normalized.prompt = displayPrompt;
+      }
+
+      if (!normalized.raw_prompt && displayPrompt) {
+        normalized.raw_prompt = displayPrompt;
+      }
+
+      normalized.mode = normalized.mode || "generate";
+      normalized.model = normalized.model || "sora-2";
+      normalized.seconds = String(normalized.seconds || "4");
+      normalized.size = normalized.size || "720x1280";
+      normalized.source_video_id = normalized.source_video_id || null;
+      normalized.source_filename = normalized.source_filename || null;
+      normalized.input_reference_image_url = normalized.input_reference_image_url || "";
+      normalized.input_reference_name = normalized.input_reference_name || "";
+      normalized.input_reference_size = normalized.input_reference_size || 0;
+      normalized.has_input_reference = Boolean(
+        normalized.has_input_reference ||
+        normalized.input_reference_image_url ||
+        normalized.input_reference_file_id ||
+        normalized.input_reference_local_filename
+      );
+
+      return normalized;
+    }
+
+    function normalizeQueue() {
+      batchQueue = batchQueue
+        .map(item => normalizeQueueItem(item))
+        .filter(item => getQueuePromptForDisplay(item));
+    }
+
     function saveQueueToLocalStorage() {
+      normalizeQueue();
       localStorage.setItem("sora_batch_queue", JSON.stringify(batchQueue));
     }
 
@@ -1584,6 +1641,8 @@
         if (!Array.isArray(batchQueue)) {
           batchQueue = [];
         }
+        normalizeQueue();
+        localStorage.setItem("sora_batch_queue", JSON.stringify(batchQueue));
       } catch {
         batchQueue = [];
       }
@@ -1593,6 +1652,7 @@
       const queueList = document.getElementById("queueList");
       const queueCount = document.getElementById("queueCount");
 
+      normalizeQueue();
       queueList.innerHTML = "";
       queueCount.textContent = `${batchQueue.length} queued`;
 
@@ -1620,7 +1680,7 @@
 
         const text = document.createElement("div");
         text.className = "queue-text";
-        text.textContent = item.prompt;
+        text.textContent = getQueuePromptForDisplay(item);
 
         let imageChip = null;
         if (item.input_reference_name) {
@@ -1669,7 +1729,7 @@
         return;
       }
 
-      batchQueue.push(item);
+      batchQueue.push(normalizeQueueItem(item));
       saveQueueToLocalStorage();
       renderQueue();
 
@@ -1681,7 +1741,7 @@
     function editBatchItem(index) {
       const item = batchQueue[index];
 
-      document.getElementById("prompt").value = item.prompt;
+      document.getElementById("prompt").value = getQueuePromptForDisplay(item);
       document.getElementById("model").value = item.model || "sora-2";
       document.getElementById("size").value = item.size || "720x1280";
       const promptPreset = document.getElementById("promptPreset");
@@ -1842,6 +1902,9 @@
         alert("Batch queue is empty.");
         return;
       }
+
+      normalizeQueue();
+      saveQueueToLocalStorage();
 
       const confirmed = await confirmBatchSubmission();
 
@@ -2653,13 +2716,32 @@
     }
 
     async function refreshOutputs() {
+      if (outputsRequestController) {
+        outputsRequestController.abort();
+      }
+
+      outputsRequestController = new AbortController();
+
       const params = new URLSearchParams({
         tab: currentGalleryTab,
         page: String(galleryPage),
         per_page: "40",
         q: gallerySearchQuery
       });
-      const response = await fetch(`/api/videos?${params.toString()}`, { cache: "no-store" });
+
+      let response;
+      try {
+        response = await fetch(`/api/videos?${params.toString()}`, {
+          cache: "no-store",
+          signal: outputsRequestController.signal
+        });
+      } catch (error) {
+        if (error.name === "AbortError") {
+          return;
+        }
+        throw error;
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
@@ -3039,7 +3121,6 @@
       [3000, 9000, 18000].forEach(delay => {
         setTimeout(async () => {
           await loadThumbnailStatus();
-          await refreshOutputs().catch(error => console.warn("Thumbnail refresh failed:", error));
         }, delay);
       });
     }
