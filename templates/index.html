@@ -267,6 +267,20 @@
       padding: 6px 10px;
     }
 
+    .page-jump {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .page-jump input {
+      width: 88px;
+      margin-top: 0;
+      padding: 8px 9px;
+      font-size: 13px;
+    }
+
     .outputs-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -954,6 +968,9 @@
   <div class="tabs">
     <button type="button" class="tab-button active" id="tab-main" onclick="setGalleryTab('main')">Main</button>
     <button type="button" class="tab-button" id="tab-favorites" onclick="setGalleryTab('favorites')">Favorites</button>
+    <button type="button" class="tab-button" id="tab-new" onclick="setGalleryTab('new')">New</button>
+    <button type="button" class="tab-button" id="tab-remixes" onclick="setGalleryTab('remixes')">Remixes</button>
+    <button type="button" class="tab-button" id="tab-extensions" onclick="setGalleryTab('extensions')">Extensions</button>
     <button type="button" class="tab-button archive-tab" id="tab-archive" onclick="setGalleryTab('archive')">Archive</button>
   </div>
 
@@ -1787,8 +1804,14 @@
     function confirmBatchSubmission() {
       return new Promise(resolve => {
         const overlay = document.getElementById("batchConfirmOverlay");
+        const title = document.getElementById("batchConfirmTitle");
         const cancelButton = document.getElementById("batchConfirmCancel");
         const sendButton = document.getElementById("batchConfirmSend");
+        const batchCost = estimateItemsCost(batchQueue, "batch");
+
+        if (title) {
+          title.textContent = `Send OpenAI Batch • ${money(batchCost)}?`;
+        }
 
         const close = value => {
           overlay.classList.remove("visible");
@@ -2121,6 +2144,34 @@
       label.className = "meta";
       label.textContent = `Log page ${page} of ${totalPages} • ${total} jobs`;
 
+      const jump = document.createElement("form");
+      jump.className = "page-jump";
+      jump.onsubmit = event => {
+        event.preventDefault();
+        const requested = parseInt(input.value, 10);
+        if (!Number.isFinite(requested)) {
+          return;
+        }
+        jobLogPage = Math.min(Math.max(requested, 1), totalPages);
+        loadJobLog(true);
+      };
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "1";
+      input.max = String(totalPages);
+      input.step = "1";
+      input.value = String(page);
+      input.setAttribute("aria-label", "Job log page number");
+
+      const go = document.createElement("button");
+      go.type = "submit";
+      go.className = "small-button";
+      go.textContent = "Go";
+
+      jump.appendChild(input);
+      jump.appendChild(go);
+
       const next = document.createElement("button");
       next.type = "button";
       next.className = "small-button";
@@ -2133,6 +2184,7 @@
 
       container.appendChild(prev);
       container.appendChild(label);
+      container.appendChild(jump);
       container.appendChild(next);
     }
 
@@ -2449,7 +2501,7 @@
       currentGalleryTab = tab;
       galleryPage = 1;
 
-      ["main", "favorites", "archive"].forEach(name => {
+      ["main", "favorites", "new", "remixes", "extensions", "archive"].forEach(name => {
         const tabButton = document.getElementById(`tab-${name}`);
         if (tabButton) {
           tabButton.classList.toggle("active", name === tab);
@@ -2464,6 +2516,18 @@
       // server-rendered first paint before /api/videos returns.
       if (currentGalleryTab === "favorites") {
         return videos.filter(video => video.favorite && !video.archived);
+      }
+
+      if (currentGalleryTab === "new") {
+        return videos.filter(video => video.is_new && !video.archived);
+      }
+
+      if (currentGalleryTab === "remixes") {
+        return videos.filter(video => video.source_mode === "remix" && !video.archived);
+      }
+
+      if (currentGalleryTab === "extensions") {
+        return videos.filter(video => video.source_mode === "extend" && !video.archived);
       }
 
       if (currentGalleryTab === "archive") {
@@ -2634,6 +2698,34 @@
       label.className = "meta";
       label.textContent = `Page ${page} of ${totalPages} • ${total} result${total === 1 ? "" : "s"}${gallerySearchQuery ? ` matching “${gallerySearchQuery}”` : ""}`;
 
+      const jump = document.createElement("form");
+      jump.className = "page-jump";
+      jump.onsubmit = event => {
+        event.preventDefault();
+        const requested = parseInt(input.value, 10);
+        if (!Number.isFinite(requested)) {
+          return;
+        }
+        galleryPage = Math.min(Math.max(requested, 1), totalPages);
+        refreshOutputs();
+      };
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "1";
+      input.max = String(totalPages);
+      input.step = "1";
+      input.value = String(page);
+      input.setAttribute("aria-label", "Gallery page number");
+
+      const go = document.createElement("button");
+      go.type = "submit";
+      go.className = "small-button";
+      go.textContent = "Go";
+
+      jump.appendChild(input);
+      jump.appendChild(go);
+
       const next = document.createElement("button");
       next.type = "button";
       next.className = "small-button";
@@ -2646,6 +2738,7 @@
 
       container.appendChild(prev);
       container.appendChild(label);
+      container.appendChild(jump);
       container.appendChild(next);
     }
 
@@ -2775,7 +2868,7 @@
       }
 
       if (mode === "extend") {
-        return "Extend";
+        return "Extension";
       }
 
       return "Generate";

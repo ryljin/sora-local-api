@@ -35,6 +35,14 @@ app = Flask(__name__)
 
 jobs = {}
 jobs_lock = threading.Lock()
+
+video_index_lock = threading.Lock()
+video_index_cache = {
+    "signature": None,
+    "videos": [],
+    "built_at": None,
+}
+
 pins_lock = threading.Lock()
 views_lock = threading.Lock()
 favorites_lock = threading.Lock()
@@ -938,6 +946,7 @@ def mark_viewed(filename: str):
     viewed = load_views()
     viewed.add(filename)
     save_views(viewed)
+    invalidate_video_index()
     return True
 
 
@@ -966,6 +975,7 @@ def set_pin(filename: str, pinned: bool):
         pins.discard(filename)
 
     save_pins(pins)
+    invalidate_video_index()
     return filename in pins
 
 
@@ -982,6 +992,7 @@ def set_favorite(filename: str, favorite: bool):
         favorites.discard(filename)
 
     save_favorites(favorites)
+    invalidate_video_index()
     return filename in favorites
 
 
@@ -998,6 +1009,7 @@ def set_archived(filename: str, archived: bool):
         archive.discard(filename)
 
     save_archive(archive)
+    invalidate_video_index()
     return filename in archive
 
 
@@ -1020,7 +1032,7 @@ def find_filename_by_video_id(video_id: str):
     return None
 
 
-def read_metadata(video_filename: str):
+def read_metadata(video_filename: str, state_sets=None):
     video_path = safe_output_path(video_filename)
     metadata_path = video_path.with_suffix(".txt")
 
@@ -1039,14 +1051,28 @@ def read_metadata(video_filename: str):
         "input_reference_name": "",
         "input_reference_local_filename": "",
         "has_input_reference": False,
-        "pinned": is_pinned(video_filename),
-        "favorite": is_favorite(video_filename),
-        "archived": is_archived(video_filename),
-        "viewed": is_viewed(video_filename),
-        "is_new": not is_viewed(video_filename),
+        "pinned": False,
+        "favorite": False,
+        "archived": False,
+        "viewed": False,
+        "is_new": True,
         "thumbnail": "",
         "prompt_preview": "",
     }
+
+    if state_sets is None:
+        state_sets = {
+            "pins": load_pins(),
+            "favorites": load_favorites(),
+            "archive": load_archive(),
+            "views": load_views(),
+        }
+
+    data["pinned"] = video_filename in state_sets.get("pins", set())
+    data["favorite"] = video_filename in state_sets.get("favorites", set())
+    data["archived"] = video_filename in state_sets.get("archive", set())
+    data["viewed"] = video_filename in state_sets.get("views", set())
+    data["is_new"] = not data["viewed"]
 
     if not metadata_path.exists():
         data["thumbnail"] = cached_thumbnail(video_filename)
@@ -1146,20 +1172,135 @@ def save_rich_metadata(
     )
 
 
-def get_local_videos(include_full_prompt: bool = False):
-    videos = []
+def get_outputs_signature():
+    """Cheaply identify when gallery data needs a rebuild.
+
+    This stats output videos, metadata sidecars, cached thumbnails, and small
+    state JSON files. It avoids re-reading every prompt/metadata file on every
+    page/filter/search request.
+    """
+    parts = []
+
+    for pattern in ("*.mp4", "*.txt"):
+        for path in OUTPUT_DIR.glob(pattern):
+            try:
+                stat = path.stat()
+                parts.append((path.name, stat.st_mtime_ns, stat.st_size))
+            except FileNotFoundError:
+                continue
+
+    for state_path in (PINS_FILE, FAVORITES_FILE, ARCHIVE_FILE, VIEWS_FILE):
+        try:
+            stat = state_path.stat()
+            parts.append((state_path.name, stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            parts.append((state_path.name, 0, 0))
+
+    try:
+        thumb_parts = []
+        for path in THUMBNAIL_DIR.glob("*.jpg"):
+            try:
+                stat = path.stat()
+                thumb_parts.append((path.name, stat.st_mtime_ns, stat.st_size))
+            except FileNotFoundError:
+                continue
+        parts.append(("__thumbs__", hash(tuple(sorted(thumb_parts))), len(thumb_parts)))
+    except Exception:
+        pass
+
+    return tuple(sorted(parts))
+
+
+def build_video_index():
+    state_sets = {
+        "pins": load_pins(),
+        "favorites": load_favorites(),
+        "archive": load_archive(),
+        "views": load_views(),
+    }
+
+    values = []
 
     for path in OUTPUT_DIR.glob("*.mp4"):
-        video = read_metadata(path.name)
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+
+        try:
+            video = read_metadata(path.name, state_sets=state_sets)
+        except Exception:
+            continue
+
+        prompt = video.get("prompt", "")
+        video["prompt_preview"] = prompt[:350]
+        video["mtime"] = stat.st_mtime
+        video["_search_text"] = " ".join([
+            video.get("filename") or "",
+            prompt,
+            video.get("prompt_preview") or "",
+            video.get("source_filename") or "",
+            video.get("preset_name") or "",
+            video.get("input_reference_name") or "",
+            video.get("input_reference_local_filename") or "",
+        ]).lower()
+        video.pop("prompt", None)
+        values.append(video)
+
+    values.sort(
+        key=lambda video: (
+            1 if video.get("pinned") else 0,
+            video.get("mtime", 0),
+        ),
+        reverse=True,
+    )
+
+    return values
+
+
+def invalidate_video_index():
+    with video_index_lock:
+        video_index_cache["signature"] = None
+
+
+def get_video_index():
+    signature = get_outputs_signature()
+
+    with video_index_lock:
+        if video_index_cache.get("signature") != signature:
+            video_index_cache["signature"] = signature
+            video_index_cache["videos"] = build_video_index()
+            video_index_cache["built_at"] = datetime.now().isoformat(timespec="seconds")
+        return [dict(video) for video in video_index_cache.get("videos", [])]
+
+
+def get_local_videos(include_full_prompt: bool = False):
+    if not include_full_prompt:
+        return get_video_index()
+
+    videos = []
+    state_sets = {
+        "pins": load_pins(),
+        "favorites": load_favorites(),
+        "archive": load_archive(),
+        "views": load_views(),
+    }
+
+    for path in OUTPUT_DIR.glob("*.mp4"):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+
+        video = read_metadata(path.name, state_sets=state_sets)
         video["prompt_preview"] = video.get("prompt", "")[:350]
-        if not include_full_prompt:
-            video.pop("prompt", None)
+        video["mtime"] = stat.st_mtime
         videos.append(video)
 
     videos.sort(
         key=lambda video: (
             1 if video.get("pinned") else 0,
-            safe_output_path(video["filename"]).stat().st_mtime,
+            video.get("mtime", 0),
         ),
         reverse=True,
     )
@@ -2262,22 +2403,75 @@ def start_thumbnail_cache_for_filenames(filenames):
 
 def filtered_videos_for_tab(tab: str, query: str = ""):
     tab = (tab or "main").strip().lower()
-    videos = get_local_videos(include_full_prompt=True)
+    videos = get_video_index()
 
     if tab == "favorites":
         values = [video for video in videos if video.get("favorite") and not video.get("archived")]
+    elif tab == "new":
+        values = [video for video in videos if video.get("is_new") and not video.get("archived")]
+    elif tab == "remixes":
+        values = [video for video in videos if video.get("source_mode") == "remix" and not video.get("archived")]
+    elif tab in {"extensions", "extends", "extend"}:
+        values = [video for video in videos if video.get("source_mode") == "extend" and not video.get("archived")]
     elif tab == "archive":
         values = [video for video in videos if video.get("archived")]
     else:
         values = [video for video in videos if not video.get("archived")]
 
-    values = [video for video in values if prompt_matches_search(video, query)]
+    query = (query or "").strip().lower()
+    if query:
+        words = [word for word in re.split(r"\s+", query) if word]
+        values = [
+            video for video in values
+            if all(word in video.get("_search_text", "") for word in words)
+        ]
 
+    clean_values = []
     for video in values:
-        video["prompt_preview"] = video.get("prompt", "")[:350]
-        video.pop("prompt", None)
+        clean = dict(video)
+        clean.pop("_search_text", None)
+        clean_values.append(clean)
 
-    return values
+    return clean_values
+
+
+def child_videos_for_source(source_filename: str, query: str = ""):
+    source_filename = (source_filename or "").strip()
+    videos = get_video_index()
+
+    try:
+        source_video = read_metadata(source_filename)
+        source_video_id = source_video.get("video_id") or extract_video_id(source_filename) or ""
+    except Exception:
+        source_video_id = extract_video_id(source_filename) or ""
+
+    values = []
+    for video in videos:
+        if video.get("filename") == source_filename:
+            continue
+
+        is_child_by_filename = bool(source_filename and video.get("source_filename") == source_filename)
+        is_child_by_id = bool(source_video_id and video.get("source_video_id") == source_video_id)
+        is_derivative = video.get("source_mode") in {"remix", "extend"}
+
+        if is_derivative and (is_child_by_filename or is_child_by_id):
+            values.append(video)
+
+    query = (query or "").strip().lower()
+    if query:
+        words = [word for word in re.split(r"\s+", query) if word]
+        values = [
+            video for video in values
+            if all(word in video.get("_search_text", "") for word in words)
+        ]
+
+    clean_values = []
+    for video in values:
+        clean = dict(video)
+        clean.pop("_search_text", None)
+        clean_values.append(clean)
+
+    return clean_values
 
 
 def paginate_list(values, page=1, per_page=40):
@@ -2386,7 +2580,7 @@ with jobs_lock:
 
 @app.route("/")
 def index():
-    return render_template("index.html", videos=get_local_videos()[:40])
+    return render_template("index.html", videos=filtered_videos_for_tab("main", "")[:40])
 
 
 @app.route("/video/<path:filename>")
@@ -2723,6 +2917,16 @@ def api_videos():
     values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
     start_thumbnail_cache_for_filenames([video.get("filename") for video in values])
     return jsonify({"videos": values, "pagination": pagination, "tab": tab, "q": query})
+
+
+@app.route("/api/video-children/<path:filename>")
+def api_video_children(filename):
+    query = request.args.get("q", "")
+    page = request.args.get("page", "1")
+    per_page = request.args.get("per_page", "24")
+    values, pagination = paginate_list(child_videos_for_source(filename, query), page, per_page)
+    start_thumbnail_cache_for_filenames([video.get("filename") for video in values])
+    return jsonify({"videos": values, "pagination": pagination, "filename": filename, "q": query})
 
 
 @app.route("/api/video-info/<path:filename>")
