@@ -1740,6 +1740,17 @@
 
     function editBatchItem(index) {
       const item = batchQueue[index];
+      const currentDraft = getCurrentItem();
+      const currentDraftPrompt = getQueuePromptForDisplay(currentDraft);
+
+      batchQueue.splice(index, 1);
+
+      // If the prompt box already contains a different draft, do not overwrite it.
+      // Preserve that draft by pushing it back into the queue before loading the
+      // selected queued item into the editor.
+      if (currentDraftPrompt) {
+        batchQueue.push(normalizeQueueItem(currentDraft));
+      }
 
       document.getElementById("prompt").value = getQueuePromptForDisplay(item);
       document.getElementById("model").value = item.model || "sora-2";
@@ -1764,7 +1775,6 @@
 
       setImageReferenceFromItem(item);
 
-      batchQueue.splice(index, 1);
       saveQueueToLocalStorage();
       renderQueue();
 

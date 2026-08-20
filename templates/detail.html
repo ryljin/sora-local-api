@@ -462,6 +462,9 @@
     <div class="meta">Model: {{ video.model }}</div>
     <div class="meta">Duration: {{ video.seconds }} seconds</div>
     <div class="meta">Size: {{ video.size }}</div>
+    {% if video.has_input_reference or video.input_reference_name or video.input_reference_local_filename %}
+      <div class="meta">Image reference: {{ video.input_reference_name or video.input_reference_local_filename or "Unknown image" }}</div>
+    {% endif %}
     <div class="meta">Pinned: <span id="pinnedState">{{ 'yes' if video.pinned else 'no' }}</span></div>
     <div class="meta">Favorite: <span id="favoriteState">{{ 'yes' if video.favorite else 'no' }}</span></div>
     <div class="meta">Archived: <span id="archiveState">{{ 'yes' if video.archived else 'no' }}</span></div>
@@ -1150,9 +1153,19 @@
         preview.className = "meta";
         preview.textContent = video.prompt_preview || "";
 
+        let imageChip = null;
+        if (video.has_input_reference || video.input_reference_name || video.input_reference_local_filename) {
+          imageChip = document.createElement("div");
+          imageChip.className = "image-chip";
+          imageChip.textContent = `Image: ${video.input_reference_name || video.input_reference_local_filename || "reference"}`;
+        }
+
         card.appendChild(title);
         card.appendChild(thumbWrap);
         card.appendChild(meta);
+        if (imageChip) {
+          card.appendChild(imageChip);
+        }
         if (video.prompt_preview) {
           card.appendChild(preview);
         }
