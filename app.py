@@ -43,6 +43,9 @@ video_index_cache = {
     "built_at": None,
     "dirty": True,
     "last_disk_check": 0.0,
+    "loaded_from_disk": False,
+    "refresh_running": False,
+    "last_error": "",
 }
 
 pins_lock = threading.Lock()
@@ -51,12 +54,14 @@ favorites_lock = threading.Lock()
 archive_lock = threading.Lock()
 budget_lock = threading.Lock()
 presets_lock = threading.Lock()
+tags_lock = threading.Lock()
 VIEWS_FILE = OUTPUT_DIR / "views.json"
 FAVORITES_FILE = OUTPUT_DIR / "favorites.json"
 ARCHIVE_FILE = OUTPUT_DIR / "archive.json"
 BUDGET_FILE = OUTPUT_DIR / "budget.json"
 JOBS_FILE = OUTPUT_DIR / "jobs.json"
 PRESETS_FILE = OUTPUT_DIR / "presets.json"
+TAGS_FILE = OUTPUT_DIR / "tags.json"
 THUMBNAIL_DIR = OUTPUT_DIR / "thumbnails"
 UPLOAD_DIR = OUTPUT_DIR / "uploads"
 THUMBNAIL_DIR.mkdir(exist_ok=True)
@@ -79,7 +84,8 @@ thumbnail_state = {
 TERMINAL_JOB_STATUSES = {"completed", "completed_with_errors", "failed", "expired", "cancelled", "interrupted"}
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled"}
 NON_CANCELLABLE_LOCAL_BATCH_STATUSES = TERMINAL_JOB_STATUSES | {"processing_batch_output"}
-GALLERY_DISK_RESCAN_SECONDS = 30
+GALLERY_DISK_RESCAN_SECONDS = 300
+GALLERY_INDEX_FILE = OUTPUT_DIR / "gallery_index.json"
 
 
 
@@ -565,6 +571,136 @@ def save_presets(presets):
             json.dumps({"presets": presets}, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+def normalize_tag_name(value: str) -> str:
+    value = re.sub(r"\s+", " ", str(value or "").strip())
+    return value[:60]
+
+
+def load_custom_tags():
+    if not TAGS_FILE.exists():
+        return {}
+
+    try:
+        data = json.loads(TAGS_FILE.read_text(encoding="utf-8"))
+        raw_tags = data.get("tags", {})
+        if not isinstance(raw_tags, dict):
+            return {}
+
+        tags = {}
+        for name, filenames in raw_tags.items():
+            tag_name = normalize_tag_name(name)
+            if not tag_name:
+                continue
+            if isinstance(filenames, list):
+                tags[tag_name] = {str(filename) for filename in filenames if filename}
+            else:
+                tags[tag_name] = set()
+        return tags
+    except Exception:
+        return {}
+
+
+def save_custom_tags(tags):
+    clean = {}
+    for name, filenames in (tags or {}).items():
+        tag_name = normalize_tag_name(name)
+        if not tag_name:
+            continue
+        clean[tag_name] = sorted({str(filename) for filename in filenames if filename})
+
+    with tags_lock:
+        TAGS_FILE.write_text(
+            json.dumps({"tags": clean}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def all_custom_tag_names():
+    return sorted(load_custom_tags().keys(), key=lambda value: value.lower())
+
+
+def tags_for_filename(filename: str, tags=None):
+    tags = tags if tags is not None else load_custom_tags()
+    return sorted([name for name, filenames in tags.items() if filename in filenames], key=lambda value: value.lower())
+
+
+def ensure_custom_tag(tag_name: str):
+    tag_name = normalize_tag_name(tag_name)
+    if not tag_name:
+        raise ValueError("Tag name cannot be empty.")
+    tags = load_custom_tags()
+    tags.setdefault(tag_name, set())
+    save_custom_tags(tags)
+    return tag_name
+
+
+
+
+def rename_custom_tag(old_name: str, new_name: str):
+    old_name = normalize_tag_name(old_name)
+    new_name = normalize_tag_name(new_name)
+
+    if not old_name:
+        raise ValueError("Select a tag to rename.")
+    if not new_name:
+        raise ValueError("New tag name cannot be empty.")
+
+    tags = load_custom_tags()
+    if old_name not in tags:
+        raise KeyError(old_name)
+
+    if old_name == new_name:
+        return new_name
+
+    old_files = set(tags.get(old_name, set()))
+    new_files = set(tags.get(new_name, set()))
+    tags[new_name] = old_files | new_files
+    tags.pop(old_name, None)
+
+    save_custom_tags(tags)
+    invalidate_video_index(files_changed=False)
+    return new_name
+
+
+def delete_custom_tag(tag_name: str):
+    tag_name = normalize_tag_name(tag_name)
+    if not tag_name:
+        raise ValueError("Select a tag to remove.")
+
+    tags = load_custom_tags()
+    if tag_name not in tags:
+        raise KeyError(tag_name)
+
+    tags.pop(tag_name, None)
+    save_custom_tags(tags)
+    invalidate_video_index(files_changed=False)
+    return tag_name
+
+def set_video_custom_tags(filename: str, tag_names):
+    path = safe_output_path(filename)
+    if not path.exists() or path.suffix.lower() != ".mp4":
+        raise FileNotFoundError(filename)
+
+    selected = {normalize_tag_name(name) for name in (tag_names or [])}
+    selected = {name for name in selected if name}
+
+    tags = load_custom_tags()
+    for name in selected:
+        tags.setdefault(name, set())
+
+    for name in list(tags.keys()):
+        filenames = set(tags.get(name, set()))
+        if name in selected:
+            filenames.add(filename)
+        else:
+            filenames.discard(filename)
+        tags[name] = filenames
+
+    save_custom_tags(tags)
+    invalidate_video_index(files_changed=False)
+    return tags_for_filename(filename, tags)
 
 
 def make_unique_preset_id(base_id: str, presets):
@@ -1057,6 +1193,7 @@ def read_metadata(video_filename: str, state_sets=None, resolve_source: bool = T
         "is_new": True,
         "thumbnail": "",
         "prompt_preview": "",
+        "custom_tags": [],
     }
 
     if state_sets is None:
@@ -1065,6 +1202,7 @@ def read_metadata(video_filename: str, state_sets=None, resolve_source: bool = T
             "favorites": load_favorites(),
             "archive": load_archive(),
             "views": load_views(),
+            "custom_tags": load_custom_tags(),
         }
 
     data["pinned"] = video_filename in state_sets.get("pins", set())
@@ -1072,6 +1210,7 @@ def read_metadata(video_filename: str, state_sets=None, resolve_source: bool = T
     data["archived"] = video_filename in state_sets.get("archive", set())
     data["viewed"] = video_filename in state_sets.get("views", set())
     data["is_new"] = not data["viewed"]
+    data["custom_tags"] = tags_for_filename(video_filename, state_sets.get("custom_tags", {}))
 
     if not metadata_path.exists():
         data["thumbnail"] = cached_thumbnail(video_filename)
@@ -1170,6 +1309,14 @@ def save_rich_metadata(
         encoding="utf-8",
     )
 
+    # Keep the persistent gallery index current immediately for newly downloaded
+    # standard, remix, extend, and Batch outputs. Without this, the large-library
+    # cache can make new videos invisible until the next full background rescan.
+    try:
+        upsert_video_in_index(output_path.name)
+    except Exception:
+        pass
+
 
 def get_outputs_signature():
     """Identify file/metadata changes without touching thumbnails or UI state files.
@@ -1197,6 +1344,7 @@ def runtime_state_sets():
         "favorites": load_favorites(),
         "archive": load_archive(),
         "views": load_views(),
+        "custom_tags": load_custom_tags(),
     }
 
 
@@ -1210,10 +1358,101 @@ def apply_runtime_video_state(video: dict, state_sets=None):
     enriched["viewed"] = filename in state_sets.get("views", set())
     enriched["is_new"] = not enriched["viewed"]
     enriched["thumbnail"] = cached_thumbnail(filename)
+    enriched["custom_tags"] = tags_for_filename(filename, state_sets.get("custom_tags", {}))
     return enriched
 
+
+def load_persisted_video_index():
+    if not GALLERY_INDEX_FILE.exists():
+        return None
+
+    try:
+        data = json.loads(GALLERY_INDEX_FILE.read_text(encoding="utf-8"))
+        videos = data.get("videos", [])
+        if not isinstance(videos, list):
+            return None
+        return {
+            "signature": data.get("signature"),
+            "videos": [video for video in videos if isinstance(video, dict)],
+            "built_at": data.get("built_at"),
+        }
+    except Exception:
+        return None
+
+
+def save_persisted_video_index(signature, videos, built_at):
+    tmp_path = GALLERY_INDEX_FILE.with_suffix(".tmp")
+    payload = {
+        "version": 2,
+        "signature": signature,
+        "built_at": built_at,
+        "videos": videos,
+    }
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(GALLERY_INDEX_FILE)
+
+
+def load_video_index_from_disk_once():
+    with video_index_lock:
+        if video_index_cache.get("loaded_from_disk"):
+            return
+        video_index_cache["loaded_from_disk"] = True
+
+    persisted = load_persisted_video_index()
+    if not persisted:
+        return
+
+    with video_index_lock:
+        if video_index_cache.get("videos"):
+            return
+        video_index_cache["signature"] = persisted.get("signature")
+        video_index_cache["videos"] = persisted.get("videos") or []
+        video_index_cache["built_at"] = persisted.get("built_at")
+        video_index_cache["dirty"] = False
+        video_index_cache["last_error"] = ""
+
+
+def start_gallery_index_refresh(force: bool = False):
+    with video_index_lock:
+        if video_index_cache.get("refresh_running"):
+            return False
+        video_index_cache["refresh_running"] = True
+        video_index_cache["last_error"] = ""
+        old_signature = video_index_cache.get("signature")
+        is_dirty = bool(video_index_cache.get("dirty", True))
+
+    def worker():
+        try:
+            signature = get_outputs_signature()
+            should_rebuild = force or is_dirty or old_signature != signature
+            if should_rebuild:
+                videos = build_video_index()
+                built_at = datetime.now().isoformat(timespec="seconds")
+                save_persisted_video_index(signature, videos, built_at)
+                with video_index_lock:
+                    video_index_cache["signature"] = signature
+                    video_index_cache["videos"] = videos
+                    video_index_cache["built_at"] = built_at
+                    video_index_cache["dirty"] = False
+                    video_index_cache["last_disk_check"] = time.monotonic()
+                    video_index_cache["last_error"] = ""
+            else:
+                with video_index_lock:
+                    video_index_cache["dirty"] = False
+                    video_index_cache["last_disk_check"] = time.monotonic()
+                    video_index_cache["last_error"] = ""
+        except Exception as exc:
+            with video_index_lock:
+                video_index_cache["last_error"] = str(exc)
+        finally:
+            with video_index_lock:
+                video_index_cache["refresh_running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
+
 def build_video_index():
-    empty_state_sets = {"pins": set(), "favorites": set(), "archive": set(), "views": set()}
+    empty_state_sets = {"pins": set(), "favorites": set(), "archive": set(), "views": set(), "custom_tags": {}}
     values = []
 
     for path in OUTPUT_DIR.glob("*.mp4"):
@@ -1258,40 +1497,125 @@ def build_video_index():
     return values
 
 
+def make_video_index_record(video_filename: str):
+    """Create one gallery-index row for a newly saved output without scanning the whole library."""
+    try:
+        path = safe_output_path(video_filename)
+        stat = path.stat()
+    except Exception:
+        return None
+
+    empty_state_sets = {"pins": set(), "favorites": set(), "archive": set(), "views": set(), "custom_tags": {}}
+
+    try:
+        video = read_metadata(video_filename, state_sets=empty_state_sets, resolve_source=True)
+    except Exception:
+        return None
+
+    prompt = video.get("prompt", "")
+    video["prompt_preview"] = prompt[:350]
+    video["mtime"] = stat.st_mtime
+    video["_search_text"] = " ".join([
+        video.get("filename") or "",
+        prompt,
+        video.get("prompt_preview") or "",
+        video.get("source_filename") or "",
+        video.get("preset_name") or "",
+        video.get("input_reference_name") or "",
+        video.get("input_reference_local_filename") or "",
+    ]).lower()
+    video.pop("prompt", None)
+    return video
+
+
+def upsert_video_in_index(video_filename: str):
+    """Make a newly created/downloaded video visible immediately.
+
+    The large-library index normally refreshes in the background so search/page
+    switches stay fast with thousands of videos. New Sora outputs should not
+    wait for the next full disk rescan, so this surgically inserts or replaces
+    one row in the in-memory and persisted gallery index.
+    """
+    record = make_video_index_record(video_filename)
+    if not record:
+        return False
+
+    load_video_index_from_disk_once()
+
+    with video_index_lock:
+        videos = list(video_index_cache.get("videos") or [])
+        videos = [video for video in videos if video.get("filename") != video_filename]
+        videos.append(record)
+        videos.sort(key=lambda video: video.get("mtime", 0), reverse=True)
+
+        built_at = datetime.now().isoformat(timespec="seconds")
+        video_index_cache["videos"] = videos
+        video_index_cache["built_at"] = built_at
+        video_index_cache["dirty"] = False
+        video_index_cache["last_disk_check"] = time.monotonic()
+        video_index_cache["last_error"] = ""
+        signature = video_index_cache.get("signature")
+
+    try:
+        save_persisted_video_index(signature, videos, built_at)
+    except Exception as exc:
+        with video_index_lock:
+            video_index_cache["last_error"] = str(exc)
+
+    return True
+
+
 def invalidate_video_index(files_changed: bool = True):
-    # Most UI state changes no longer need a metadata rebuild. Use
-    # files_changed=False for pins/favorites/archive/viewed changes if you want
-    # to make the intent explicit. Existing callers remain safe.
+    # UI state changes are applied dynamically. Real file/metadata changes mark
+    # the persistent gallery index stale and refresh it in the background rather
+    # than blocking page loads/search/filter switches.
     with video_index_lock:
         if files_changed:
             video_index_cache["dirty"] = True
             video_index_cache["signature"] = None
+    if files_changed:
+        start_gallery_index_refresh(force=True)
 
 
 def get_video_index(force_disk_check: bool = False):
+    load_video_index_from_disk_once()
     now = time.monotonic()
 
     with video_index_lock:
-        should_check_disk = (
+        has_cache = bool(video_index_cache.get("videos"))
+        should_refresh = (
             force_disk_check
             or video_index_cache.get("dirty", True)
             or video_index_cache.get("signature") is None
             or (now - float(video_index_cache.get("last_disk_check") or 0)) >= GALLERY_DISK_RESCAN_SECONDS
         )
-
-        if should_check_disk:
-            signature = get_outputs_signature()
-            video_index_cache["last_disk_check"] = now
-            if video_index_cache.get("signature") != signature or video_index_cache.get("dirty", True):
-                video_index_cache["signature"] = signature
-                video_index_cache["videos"] = build_video_index()
-                video_index_cache["built_at"] = datetime.now().isoformat(timespec="seconds")
-                video_index_cache["dirty"] = False
-
+        if should_refresh and not video_index_cache.get("refresh_running"):
+            # Do not scan 5,000+ metadata files inside the request path. Return
+            # the current persisted/in-memory index immediately and refresh in
+            # the background.
+            start_needed = True
+        else:
+            start_needed = False
         base_videos = list(video_index_cache.get("videos", []))
+
+    if start_needed:
+        start_gallery_index_refresh(force=force_disk_check or not has_cache)
 
     state_sets = runtime_state_sets()
     return [apply_runtime_video_state(video, state_sets) for video in base_videos]
+
+
+def gallery_index_status():
+    load_video_index_from_disk_once()
+    with video_index_lock:
+        return {
+            "ready": bool(video_index_cache.get("videos")),
+            "indexing": bool(video_index_cache.get("refresh_running")),
+            "count": len(video_index_cache.get("videos") or []),
+            "built_at": video_index_cache.get("built_at"),
+            "error": video_index_cache.get("last_error") or "",
+        }
+
 
 def get_local_videos(include_full_prompt: bool = False):
     if not include_full_prompt:
@@ -1967,7 +2291,9 @@ def run_openai_batch_job(job_id, items, existing_batch_id=None):
             batch_input_file = None
             jsonl_path = jobs[job_id].get("batch_jsonl") or ""
         else:
-            batch, batch_input_file, jsonl_path = create_openai_video_batch(items, job_id)
+            with jobs_lock:
+                image_reference_mode = jobs.get(job_id, {}).get("batch_image_reference_mode") or "file_id"
+            batch, batch_input_file, jsonl_path = create_openai_video_batch(items, job_id, image_reference_mode=image_reference_mode)
 
         with jobs_lock:
             update_data = {
@@ -2319,7 +2645,7 @@ def clone_batch_item_for_retry(item):
 
     return retry_item
 
-def create_local_job(items, job_type="standard"):
+def create_local_job(items, job_type="standard", batch_image_reference_mode="file_id"):
     job_id = str(uuid.uuid4())
 
     with jobs_lock:
@@ -2332,6 +2658,7 @@ def create_local_job(items, job_type="standard"):
             "completed_at": None,
             "progress": 0,
             "batch_id": None,
+            "batch_image_reference_mode": batch_image_reference_mode if job_type == "openai_batch" else "",
             "items": items,
         }
         save_jobs_snapshot_unlocked()
@@ -2420,29 +2747,64 @@ def start_thumbnail_cache_for_filenames(filenames):
     return True
 
 
-def filtered_videos_for_tab(tab: str, query: str = ""):
-    tab = (tab or "main").strip().lower()
+def parse_gallery_filters(raw_filters: str = "", tab: str = "main"):
+    filters = set()
+    for value in re.split(r"[,\s]+", str(raw_filters or "")):
+        value = value.strip().lower()
+        if value:
+            filters.add(value)
+
+    legacy_tab = (tab or "main").strip().lower()
+    if not filters and legacy_tab and legacy_tab != "main":
+        filters.add(legacy_tab)
+
+    aliases = {
+        "favorite": "favorites",
+        "fav": "favorites",
+        "unwatched": "new",
+        "remix": "remixes",
+        "extension": "extensions",
+        "extend": "extensions",
+        "extends": "extensions",
+        "archived": "archive",
+    }
+    return {aliases.get(value, value) for value in filters if value and value != "main"}
+
+
+def filtered_videos_for_tab(tab: str, query: str = "", filters=None, tag: str = ""):
+    active_filters = parse_gallery_filters(",".join(filters or []), tab) if filters is not None else parse_gallery_filters("", tab)
+    tag = normalize_tag_name(tag)
     videos = get_video_index()
 
-    if tab == "favorites":
-        values = [video for video in videos if video.get("favorite") and not video.get("archived")]
-    elif tab == "new":
-        values = [video for video in videos if video.get("is_new") and not video.get("archived")]
-    elif tab == "remixes":
-        values = [video for video in videos if video.get("source_mode") == "remix" and not video.get("archived")]
-    elif tab in {"extensions", "extends", "extend"}:
-        values = [video for video in videos if video.get("source_mode") == "extend" and not video.get("archived")]
-    elif tab == "archive":
-        values = [video for video in videos if video.get("archived")]
-    else:
-        values = [video for video in videos if not video.get("archived")]
+    values = []
+    for video in videos:
+        archived = bool(video.get("archived"))
+
+        if "archive" in active_filters:
+            if not archived:
+                continue
+        elif archived:
+            continue
+
+        if "favorites" in active_filters and not video.get("favorite"):
+            continue
+        if "new" in active_filters and not video.get("is_new"):
+            continue
+        if "remixes" in active_filters and video.get("source_mode") != "remix":
+            continue
+        if "extensions" in active_filters and video.get("source_mode") != "extend":
+            continue
+        if tag and tag not in (video.get("custom_tags") or []):
+            continue
+
+        values.append(video)
 
     query = (query or "").strip().lower()
     if query:
         words = [word for word in re.split(r"\s+", query) if word]
         values = [
             video for video in values
-            if all(word in video.get("_search_text", "") for word in words)
+            if all(word in (video.get("_search_text", "") + " " + " ".join(video.get("custom_tags") or []).lower()) for word in words)
         ]
 
     values.sort(
@@ -2605,11 +2967,15 @@ def auto_recover_jobs_once():
 with jobs_lock:
     jobs.update(load_persisted_jobs())
 
+# Load the last saved gallery index immediately and refresh it in the background.
+# This keeps Flask startup and the first page load fast even with thousands of videos.
+load_video_index_from_disk_once()
+start_gallery_index_refresh(force=False)
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", videos=filtered_videos_for_tab("main", "")[:40])
+    return render_template("index.html", videos=[])
 
 
 @app.route("/video/<path:filename>")
@@ -2697,18 +3063,21 @@ def api_start_batch():
     if not clean_items:
         return jsonify({"error": "No prompts provided."}), 400
 
+    batch_image_reference_mode = "base64" if data.get("batch_image_reference_mode") == "base64" or data.get("batch_use_base64_image_references") else "file_id"
+
     unsupported = [item for item in clean_items if item.get("mode") != "generate"]
     if unsupported:
         return jsonify({
             "error": "Real OpenAI Batch mode currently supports normal generate items only in this UI. Send remix/extend as standard jobs."
         }), 400
 
-    missing_batch_refs = [item for item in clean_items if item.get("has_input_reference") and item.get("input_reference_local_filename") and not item.get("input_reference_file_id")]
-    if missing_batch_refs:
-        first_error = missing_batch_refs[0].get("input_reference_upload_error") or "OpenAI Files upload failed for the image reference."
-        return jsonify({
-            "error": "Image-guided OpenAI Batch requires the image to upload to OpenAI Files first. " + first_error
-        }), 400
+    if batch_image_reference_mode != "base64":
+        missing_batch_refs = [item for item in clean_items if item.get("has_input_reference") and item.get("input_reference_local_filename") and not item.get("input_reference_file_id")]
+        if missing_batch_refs:
+            first_error = missing_batch_refs[0].get("input_reference_upload_error") or "OpenAI Files upload failed for the image reference."
+            return jsonify({
+                "error": "Image-guided OpenAI Batch requires the image to upload to OpenAI Files first. " + first_error
+            }), 400
 
     models = set(item.get("model", "sora-2") for item in clean_items)
     if len(models) > 1:
@@ -2716,7 +3085,7 @@ def api_start_batch():
             "error": "OpenAI Batch input files for this UI are restricted to one model at a time. Use one model per batch."
         }), 400
 
-    job_id = create_local_job(clean_items, job_type="openai_batch")
+    job_id = create_local_job(clean_items, job_type="openai_batch", batch_image_reference_mode=batch_image_reference_mode)
 
     thread = threading.Thread(target=run_openai_batch_job, args=(job_id, clean_items), daemon=True)
     thread.start()
@@ -2818,13 +3187,15 @@ def api_retry_batch(job_id):
     if not retry_items:
         return jsonify({"error": "No failed or missing-output batch items are available to retry."}), 400
 
+    batch_image_reference_mode = old_job.get("batch_image_reference_mode") or "file_id"
+
     missing_batch_refs = [
         item for item in retry_items
         if item.get("has_input_reference")
         and item.get("input_reference_local_filename")
         and not item.get("input_reference_file_id")
     ]
-    if missing_batch_refs:
+    if missing_batch_refs and batch_image_reference_mode != "base64":
         first_error = missing_batch_refs[0].get("input_reference_upload_error") or "OpenAI Files upload failed for the image reference."
         return jsonify({
             "error": "Image-guided OpenAI Batch retry requires the image to upload to OpenAI Files first. " + first_error
@@ -2836,7 +3207,7 @@ def api_retry_batch(job_id):
             "error": "OpenAI Batch input files for this UI are restricted to one model at a time. Retry one model group at a time."
         }), 400
 
-    new_job_id = create_local_job(retry_items, job_type="openai_batch")
+    new_job_id = create_local_job(retry_items, job_type="openai_batch", batch_image_reference_mode=batch_image_reference_mode)
 
     with jobs_lock:
         new_job = jobs.get(new_job_id)
@@ -2943,10 +3314,12 @@ def api_videos():
     query = request.args.get("q", "")
     page = request.args.get("page", "1")
     per_page = request.args.get("per_page", "40")
-    page_values, pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    filters = parse_gallery_filters(request.args.get("filters", ""), tab)
+    tag = request.args.get("tag", "")
+    page_values, pagination = paginate_list(filtered_videos_for_tab(tab, query, filters=filters, tag=tag), page, per_page)
     start_thumbnail_cache_for_filenames([video.get("filename") for video in page_values])
     videos = [public_gallery_video(video) for video in page_values]
-    return jsonify({"videos": videos, "pagination": pagination, "tab": tab, "q": query})
+    return jsonify({"videos": videos, "pagination": pagination, "tab": tab, "filters": sorted(filters), "tag": normalize_tag_name(tag), "q": query, "index": gallery_index_status()})
 
 
 @app.route("/api/video-children/<path:filename>")
@@ -2971,6 +3344,79 @@ def api_video_info(filename):
         return jsonify({"error": "Video not found."}), 404
 
     return jsonify({"video": read_metadata(filename)})
+
+
+@app.route("/api/tags")
+def api_tags():
+    return jsonify({"tags": all_custom_tag_names()})
+
+
+@app.route("/api/tags", methods=["POST"])
+def api_create_tag():
+    data = request.get_json(force=True)
+    try:
+        tag = ensure_custom_tag(data.get("tag") or data.get("name") or "")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"tag": tag, "tags": all_custom_tag_names()})
+
+
+
+
+@app.route("/api/tags/rename", methods=["POST"])
+def api_rename_tag():
+    data = request.get_json(force=True)
+    try:
+        old_name = data.get("old_name") or data.get("old") or data.get("tag") or ""
+        new_name = data.get("new_name") or data.get("new") or data.get("name") or ""
+        renamed = rename_custom_tag(old_name, new_name)
+    except KeyError:
+        return jsonify({"error": "Tag not found."}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"tag": renamed, "tags": all_custom_tag_names()})
+
+
+@app.route("/api/tags/delete", methods=["POST", "DELETE"])
+def api_delete_tag():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        removed = delete_custom_tag(data.get("tag") or data.get("name") or "")
+    except KeyError:
+        return jsonify({"error": "Tag not found."}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"removed": removed, "tags": all_custom_tag_names()})
+
+
+@app.route("/api/video-tags/<path:filename>")
+def api_get_video_tags(filename):
+    try:
+        path = safe_output_path(filename)
+    except ValueError:
+        return jsonify({"error": "Invalid filename."}), 400
+    if not path.exists() or path.suffix.lower() != ".mp4":
+        return jsonify({"error": "Video not found."}), 404
+    tags = load_custom_tags()
+    return jsonify({"filename": filename, "tags": tags_for_filename(filename, tags), "all_tags": all_custom_tag_names()})
+
+
+@app.route("/api/video-tags", methods=["POST"])
+def api_set_video_tags():
+    data = request.get_json(force=True)
+    filename = data.get("filename", "")
+    tag_names = data.get("tags", [])
+    if not filename:
+        return jsonify({"error": "Missing filename."}), 400
+    if not isinstance(tag_names, list):
+        return jsonify({"error": "tags must be a list."}), 400
+    try:
+        selected = set_video_custom_tags(filename, tag_names)
+    except FileNotFoundError:
+        return jsonify({"error": "Video not found."}), 404
+    except ValueError:
+        return jsonify({"error": "Invalid filename or tag."}), 400
+    return jsonify({"filename": filename, "tags": selected, "all_tags": all_custom_tag_names()})
 
 
 @app.route("/api/pins")
@@ -3079,11 +3525,13 @@ def api_missing_thumbnails():
     query = request.args.get("q", "")
     page = request.args.get("page", "1")
     per_page = request.args.get("per_page", "40")
+    filters = parse_gallery_filters(request.args.get("filters", ""), tab)
+    tag = request.args.get("tag", "")
 
     # Browser fallback should only consider the current visible page. The old
     # behavior scanned global missing thumbnails, which made search/tab/page
     # changes feel slow once the library grew.
-    page_values, _pagination = paginate_list(filtered_videos_for_tab(tab, query), page, per_page)
+    page_values, _pagination = paginate_list(filtered_videos_for_tab(tab, query, filters=filters, tag=tag), page, per_page)
     missing = []
     for video in page_values:
         filename = video.get("filename")

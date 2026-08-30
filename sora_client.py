@@ -1,4 +1,6 @@
+import base64
 import json
+import mimetypes
 import os
 import time
 from datetime import datetime
@@ -154,11 +156,36 @@ def generate_batch(raw_text: str, model: str = "sora-2", seconds: str = "4", siz
     return results
 
 
-def make_video_batch_jsonl(items: List[Dict[str, Any]], jsonl_path: Path):
+def local_image_to_data_url(local_filename: str, mime_type: str = "") -> str:
+    """Return a base64 data URL for an image cached under outputs/uploads/."""
+    uploads_root = (OUTPUT_DIR / "uploads").resolve()
+    local_path = (uploads_root / local_filename).resolve()
+
+    if uploads_root not in local_path.parents and local_path != uploads_root:
+        raise ValueError("Invalid image reference path.")
+
+    if not local_path.exists():
+        raise FileNotFoundError(f"Image reference file not found: {local_filename}")
+
+    resolved_mime = (mime_type or "").strip()
+    if not resolved_mime:
+        resolved_mime = mimetypes.guess_type(str(local_path))[0] or "image/png"
+
+    encoded = base64.b64encode(local_path.read_bytes()).decode("ascii")
+    return f"data:{resolved_mime};base64,{encoded}"
+
+
+def make_video_batch_jsonl(items: List[Dict[str, Any]], jsonl_path: Path, image_reference_mode: str = "file_id"):
     """
     Creates a Batch API input file for POST /v1/videos.
     Every line must target the same endpoint. Batch video requests must be JSON bodies.
+
+    image_reference_mode:
+      - file_id: upload local image references to OpenAI Files and use input_reference.file_id
+      - base64: embed cached local image references as input_reference.image_url data URLs
     """
+    image_reference_mode = "base64" if image_reference_mode == "base64" else "file_id"
+
     with jsonl_path.open("w", encoding="utf-8") as f:
         for index, item in enumerate(items):
             body = {
@@ -170,11 +197,14 @@ def make_video_batch_jsonl(items: List[Dict[str, Any]], jsonl_path: Path):
 
             input_reference_file_id = (item.get("input_reference_file_id") or "").strip()
             input_reference_image_url = (item.get("input_reference_image_url") or "").strip()
+            input_reference_local_filename = (item.get("input_reference_local_filename") or "").strip()
+            input_reference_mime_type = (item.get("input_reference_mime_type") or "image/png").strip() or "image/png"
 
-            # For OpenAI Batch, local uploads should be represented as a Files API
-            # file_id. JSONL batch requests cannot use multipart image uploads, and
-            # very large data URLs are unreliable/expensive to store in jobs.json.
-            if input_reference_file_id:
+            if image_reference_mode == "base64" and input_reference_local_filename:
+                body["input_reference"] = {
+                    "image_url": local_image_to_data_url(input_reference_local_filename, input_reference_mime_type),
+                }
+            elif input_reference_file_id:
                 body["input_reference"] = {
                     "file_id": input_reference_file_id,
                 }
@@ -195,9 +225,9 @@ def make_video_batch_jsonl(items: List[Dict[str, Any]], jsonl_path: Path):
     return jsonl_path
 
 
-def create_openai_video_batch(items: List[Dict[str, Any]], local_job_id: str):
+def create_openai_video_batch(items: List[Dict[str, Any]], local_job_id: str, image_reference_mode: str = "file_id"):
     jsonl_path = BATCH_DIR / f"video_batch_{local_job_id}.jsonl"
-    make_video_batch_jsonl(items, jsonl_path)
+    make_video_batch_jsonl(items, jsonl_path, image_reference_mode=image_reference_mode)
 
     with jsonl_path.open("rb") as f:
         batch_input_file = client.files.create(

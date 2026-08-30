@@ -267,6 +267,96 @@
       padding: 6px 10px;
     }
 
+    .tag-filter-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .tag-filter-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: 260px;
+      max-height: 360px;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid #444;
+      border-radius: 12px;
+      background: #171717;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      z-index: 20;
+      display: none;
+    }
+
+    .tag-filter-menu.visible {
+      display: block;
+    }
+
+    .tag-filter-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .tag-filter-row input {
+      margin: 0;
+    }
+
+    .tag-filter-item {
+      display: block;
+      width: 100%;
+      margin-top: 6px;
+      text-align: left;
+      background: #242424;
+      color: #eee;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+
+    .tag-filter-item.active {
+      background: #d8eaff;
+      color: #07101c;
+      border-color: #d8eaff;
+    }
+
+
+    .tag-filter-tools {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #333;
+    }
+
+    .tag-filter-tools-title {
+      color: #aaa;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .tag-filter-tools button {
+      white-space: nowrap;
+    }
+
+    .tag-filter-tools .danger {
+      width: auto;
+      min-width: 74px;
+    }
+
+    .tag-chip {
+      display: inline-block;
+      margin-top: 6px;
+      margin-right: 5px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #252525;
+      border: 1px solid #444;
+      color: #ddd;
+      font-size: 12px;
+    }
+
     .page-jump {
       display: flex;
       align-items: center;
@@ -923,6 +1013,11 @@
         Add generations to batch instead of generating immediately
       </label>
 
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-weight:normal;">
+        <input id="batchBase64ImageToggle" type="checkbox" onchange="onBatchBase64ImageToggle()" style="width:auto;margin:0;">
+        Batch image references as base64 instead of file_id
+      </label>
+
       <div class="queue-list" id="queueList"></div>
 
       <button type="button" class="send-batch" onclick="sendBatch()">Send Batch with OpenAI Batch API</button>
@@ -972,6 +1067,28 @@
     <button type="button" class="tab-button" id="tab-remixes" onclick="setGalleryTab('remixes')">Remixes</button>
     <button type="button" class="tab-button" id="tab-extensions" onclick="setGalleryTab('extensions')">Extensions</button>
     <button type="button" class="tab-button archive-tab" id="tab-archive" onclick="setGalleryTab('archive')">Archive</button>
+    <div class="tag-filter-wrap">
+      <button type="button" class="tab-button" id="tagFilterButton" onclick="toggleTagFilterMenu(event)">...</button>
+      <div class="tag-filter-menu" id="tagFilterMenu">
+        <div class="meta">Custom tags</div>
+        <button type="button" class="tag-filter-item" id="tagFilterAll" onclick="selectGalleryTag('')">All tags</button>
+        <div id="tagFilterList"></div>
+        <div class="tag-filter-row">
+          <input id="newGalleryTagName" type="text" placeholder="New tag name">
+          <button type="button" class="small-button" onclick="createGalleryTag()">Create</button>
+        </div>
+        <div class="tag-filter-tools">
+          <div class="tag-filter-tools-title">Selected tag</div>
+          <div class="tag-filter-row">
+            <input id="selectedGalleryTagName" type="text" placeholder="Select a tag to rename/remove">
+          </div>
+          <div class="tag-filter-row">
+            <button type="button" class="small-button secondary" id="renameGalleryTagButton" onclick="renameGalleryTag()">Rename</button>
+            <button type="button" class="small-button danger" id="deleteGalleryTagButton" onclick="deleteGalleryTag()">Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="outputs-grid" id="outputsGrid">
@@ -992,6 +1109,13 @@
           <div class="meta">{{ video.seconds }}s | {{ video.size }}</div>
           {% if video.has_input_reference %}
             <div class="image-chip">Image reference{% if video.input_reference_name %}: {{ video.input_reference_name }}{% endif %}</div>
+          {% endif %}
+          {% if video.custom_tags %}
+            <div>
+              {% for tag in video.custom_tags %}
+                <span class="tag-chip">{{ tag }}</span>
+              {% endfor %}
+            </div>
           {% endif %}
           {% if video.prompt_preview %}
             <div class="prompt-preview">{{ video.prompt_preview }}</div>
@@ -1033,9 +1157,15 @@
     let lastCompletedOutputCount = null;
     let allVideos = Array.isArray({{ videos|tojson }}) ? {{ videos|tojson }} : [];
     let currentGalleryTab = "main";
+    const GALLERY_FILTERS_KEY = "sora_gallery_filters";
+    const GALLERY_TAG_KEY = "sora_gallery_custom_tag";
+    let activeGalleryFilters = new Set(JSON.parse(localStorage.getItem(GALLERY_FILTERS_KEY) || "[]"));
+    let selectedGalleryTag = localStorage.getItem(GALLERY_TAG_KEY) || "";
+    let customTags = [];
     let galleryPage = 1;
     let galleryPagination = { page: 1, total_pages: 1, total: 0 };
     let gallerySearchQuery = localStorage.getItem("sora_gallery_search_query") || "";
+    let galleryIndexStatus = { ready: false, indexing: false, count: 0, built_at: null, error: "" };
     let outputsRequestController = null;
     let expandedJobIds = new Set(JSON.parse(localStorage.getItem("sora_expanded_job_ids") || "[]"));
     let jobLogPage = 1;
@@ -1047,6 +1177,8 @@
     const JOBS_COLLAPSED_KEY = "sora_jobs_panel_collapsed";
     const BUDGET_DRAFT_KEY = "sora_budget_remaining_draft";
     const BATCH_MODE_KEY = "sora_batch_mode_enabled";
+    const BATCH_BASE64_IMAGE_KEY = "sora_batch_base64_image_references";
+    let batchBase64ImageReferencesEnabled = false;
 
     function getCurrentSettings() {
       const customSeconds = document.getElementById("custom_seconds").value.trim();
@@ -1523,6 +1655,25 @@
       updateBudgetEstimate();
     }
 
+    function saveBatchBase64ImageModeToLocalStorage() {
+      localStorage.setItem(BATCH_BASE64_IMAGE_KEY, batchBase64ImageReferencesEnabled ? "true" : "false");
+    }
+
+    function loadBatchBase64ImageModeFromLocalStorage() {
+      batchBase64ImageReferencesEnabled = localStorage.getItem(BATCH_BASE64_IMAGE_KEY) === "true";
+
+      const toggle = document.getElementById("batchBase64ImageToggle");
+      if (toggle) {
+        toggle.checked = batchBase64ImageReferencesEnabled;
+      }
+    }
+
+    function onBatchBase64ImageToggle() {
+      const toggle = document.getElementById("batchBase64ImageToggle");
+      batchBase64ImageReferencesEnabled = !!toggle.checked;
+      saveBatchBase64ImageModeToLocalStorage();
+    }
+
     function onBudgetInput() {
       const field = document.getElementById("budgetRemaining");
       localStorage.setItem(BUDGET_DRAFT_KEY, field.value || "");
@@ -1830,7 +1981,8 @@
         },
         body: JSON.stringify({
           items,
-          batch_warning_confirmed: true
+          batch_warning_confirmed: true,
+          batch_image_reference_mode: batchBase64ImageReferencesEnabled ? "base64" : "file_id"
         })
       });
 
@@ -2570,48 +2722,233 @@
       }
     }
 
-    function setGalleryTab(tab) {
-      currentGalleryTab = tab;
-      galleryPage = 1;
+    function saveGalleryFilterState() {
+      localStorage.setItem(GALLERY_FILTERS_KEY, JSON.stringify([...activeGalleryFilters]));
+      if (selectedGalleryTag) {
+        localStorage.setItem(GALLERY_TAG_KEY, selectedGalleryTag);
+      } else {
+        localStorage.removeItem(GALLERY_TAG_KEY);
+      }
+    }
 
-      ["main", "favorites", "new", "remixes", "extensions", "archive"].forEach(name => {
+    function updateGalleryFilterButtons() {
+      const filters = ["favorites", "new", "remixes", "extensions", "archive"];
+      filters.forEach(name => {
         const tabButton = document.getElementById(`tab-${name}`);
         if (tabButton) {
-          tabButton.classList.toggle("active", name === tab);
+          tabButton.classList.toggle("active", activeGalleryFilters.has(name));
         }
       });
 
-      refreshOutputs().catch(error => console.warn("Could not refresh videos for tab switch:", error));
+      const mainButton = document.getElementById("tab-main");
+      if (mainButton) {
+        mainButton.classList.toggle("active", activeGalleryFilters.size === 0 && !selectedGalleryTag);
+      }
+
+      const tagButton = document.getElementById("tagFilterButton");
+      if (tagButton) {
+        tagButton.classList.toggle("active", Boolean(selectedGalleryTag));
+        tagButton.textContent = selectedGalleryTag ? `... ${selectedGalleryTag}` : "...";
+      }
+    }
+
+    function setGalleryTab(tab) {
+      if (tab === "main") {
+        activeGalleryFilters.clear();
+        selectedGalleryTag = "";
+      } else if (activeGalleryFilters.has(tab)) {
+        activeGalleryFilters.delete(tab);
+      } else {
+        activeGalleryFilters.add(tab);
+      }
+
+      currentGalleryTab = activeGalleryFilters.size ? [...activeGalleryFilters][0] : "main";
+      galleryPage = 1;
+      saveGalleryFilterState();
+      updateGalleryFilterButtons();
+      renderTagFilterList();
+      refreshOutputs().catch(error => console.warn("Could not refresh videos for filter switch:", error));
     }
 
     function videosForCurrentTab(videos) {
-      // Server pagination already filters by tab. This fallback is only for the
-      // server-rendered first paint before /api/videos returns.
-      if (currentGalleryTab === "favorites") {
-        return videos.filter(video => video.favorite && !video.archived);
+      return Array.isArray(videos) ? videos : [];
+    }
+
+    function toggleTagFilterMenu(event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const menu = document.getElementById("tagFilterMenu");
+      if (menu) {
+        menu.classList.toggle("visible");
+      }
+    }
+
+    function selectGalleryTag(tagName) {
+      selectedGalleryTag = tagName || "";
+      galleryPage = 1;
+      saveGalleryFilterState();
+      updateGalleryFilterButtons();
+      renderTagFilterList();
+      refreshOutputs().catch(error => console.warn("Could not refresh tag filter:", error));
+    }
+
+    function renderTagFilterList() {
+      const list = document.getElementById("tagFilterList");
+      const all = document.getElementById("tagFilterAll");
+      const selectedInput = document.getElementById("selectedGalleryTagName");
+      const renameButton = document.getElementById("renameGalleryTagButton");
+      const deleteButton = document.getElementById("deleteGalleryTagButton");
+      const hasSelectedTag = Boolean(selectedGalleryTag);
+
+      if (all) {
+        all.classList.toggle("active", !selectedGalleryTag);
+      }
+      if (selectedInput && document.activeElement !== selectedInput) {
+        selectedInput.value = selectedGalleryTag || "";
+        selectedInput.placeholder = hasSelectedTag ? "Rename selected tag" : "Select a tag to rename/remove";
+      }
+      if (renameButton) {
+        renameButton.disabled = !hasSelectedTag;
+      }
+      if (deleteButton) {
+        deleteButton.disabled = !hasSelectedTag;
+      }
+      if (!list) {
+        return;
+      }
+      list.innerHTML = "";
+      if (!customTags.length) {
+        list.innerHTML = `<div class="meta">No tags yet.</div>`;
+        return;
+      }
+      customTags.forEach(tag => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `tag-filter-item ${selectedGalleryTag === tag ? "active" : ""}`;
+        button.title = "Filter by this tag. Use the selected tag box below to rename or remove it.";
+        button.textContent = tag;
+        button.onclick = () => selectGalleryTag(selectedGalleryTag === tag ? "" : tag);
+        list.appendChild(button);
+      });
+    }
+
+    async function loadCustomTags() {
+      try {
+        const response = await fetch("/api/tags", { cache: "no-store" });
+        const data = await response.json();
+        customTags = Array.isArray(data.tags) ? data.tags : [];
+        if (selectedGalleryTag && !customTags.includes(selectedGalleryTag)) {
+          selectedGalleryTag = "";
+          saveGalleryFilterState();
+        }
+        renderTagFilterList();
+        updateGalleryFilterButtons();
+      } catch (error) {
+        console.warn("Could not load tags:", error);
+      }
+    }
+
+    async function createGalleryTag() {
+      const input = document.getElementById("newGalleryTagName");
+      const tag = input ? input.value.trim() : "";
+      if (!tag) {
+        return;
+      }
+      const response = await fetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to create tag.");
+        return;
+      }
+      if (input) {
+        input.value = "";
+      }
+      customTags = Array.isArray(data.tags) ? data.tags : [];
+      selectedGalleryTag = data.tag || tag;
+      galleryPage = 1;
+      saveGalleryFilterState();
+      renderTagFilterList();
+      updateGalleryFilterButtons();
+      refreshOutputs().catch(error => console.warn("Could not refresh after tag create:", error));
+    }
+
+
+    async function renameGalleryTag() {
+      if (!selectedGalleryTag) {
+        return;
       }
 
-      if (currentGalleryTab === "new") {
-        return videos.filter(video => video.is_new && !video.archived);
+      const input = document.getElementById("selectedGalleryTagName");
+      const newName = input ? input.value.trim() : "";
+      if (!newName || newName === selectedGalleryTag) {
+        return;
       }
 
-      if (currentGalleryTab === "remixes") {
-        return videos.filter(video => video.source_mode === "remix" && !video.archived);
+      const oldName = selectedGalleryTag;
+      const response = await fetch("/api/tags/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_name: oldName, new_name: newName })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to rename tag.");
+        return;
       }
 
-      if (currentGalleryTab === "extensions") {
-        return videos.filter(video => video.source_mode === "extend" && !video.archived);
+      customTags = Array.isArray(data.tags) ? data.tags : [];
+      selectedGalleryTag = data.tag || newName;
+      galleryPage = 1;
+      saveGalleryFilterState();
+      renderTagFilterList();
+      updateGalleryFilterButtons();
+      refreshOutputs().catch(error => console.warn("Could not refresh after tag rename:", error));
+    }
+
+    async function deleteGalleryTag() {
+      if (!selectedGalleryTag) {
+        return;
       }
 
-      if (currentGalleryTab === "archive") {
-        return videos.filter(video => video.archived);
+      const tag = selectedGalleryTag;
+      if (!confirm(`Remove tag "${tag}" from all videos?`)) {
+        return;
       }
 
-      return videos.filter(video => !video.archived);
+      const response = await fetch("/api/tags/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to remove tag.");
+        return;
+      }
+
+      customTags = Array.isArray(data.tags) ? data.tags : [];
+      selectedGalleryTag = "";
+      galleryPage = 1;
+      saveGalleryFilterState();
+      renderTagFilterList();
+      updateGalleryFilterButtons();
+      refreshOutputs().catch(error => console.warn("Could not refresh after tag delete:", error));
     }
 
     function outputUrl(filename) {
       return `/outputs/${encodeURIComponent(filename)}`;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text == null ? "" : String(text);
+      return div.innerHTML;
     }
 
     function renderOutputs(videos) {
@@ -2625,7 +2962,13 @@
       grid.innerHTML = "";
 
       if (shownVideos.length === 0) {
-        grid.innerHTML = `<p class="note">No videos in this tab.</p>`;
+        if (galleryIndexStatus.indexing && !galleryIndexStatus.ready) {
+          grid.innerHTML = `<p class="note">Indexing local gallery. Search and filters will appear as the cache finishes.</p>`;
+        } else if (galleryIndexStatus.error) {
+          grid.innerHTML = `<p class="note">Gallery index error: ${escapeHtml(galleryIndexStatus.error)}</p>`;
+        } else {
+          grid.innerHTML = `<p class="note">No videos in this tab.</p>`;
+        }
         return;
       }
 
@@ -2714,6 +3057,17 @@
           card.appendChild(sourceMeta);
         }
 
+        if (Array.isArray(video.custom_tags) && video.custom_tags.length) {
+          const tagWrap = document.createElement("div");
+          video.custom_tags.forEach(tag => {
+            const chip = document.createElement("span");
+            chip.className = "tag-chip";
+            chip.textContent = tag;
+            tagWrap.appendChild(chip);
+          });
+          card.appendChild(tagWrap);
+        }
+
         if (video.prompt_preview) {
           const preview = document.createElement("div");
           preview.className = "prompt-preview";
@@ -2734,6 +3088,8 @@
 
       const params = new URLSearchParams({
         tab: currentGalleryTab,
+        filters: [...activeGalleryFilters].join(","),
+        tag: selectedGalleryTag,
         page: String(galleryPage),
         per_page: "40",
         q: gallerySearchQuery
@@ -2759,6 +3115,7 @@
       }
 
       allVideos = Array.isArray(data.videos) ? data.videos : [];
+      galleryIndexStatus = data.index || galleryIndexStatus || { ready: true, indexing: false, count: allVideos.length, built_at: null, error: "" };
       galleryPagination = data.pagination || { page: 1, total_pages: 1, total: allVideos.length };
       galleryPage = galleryPagination.page || galleryPage;
       renderOutputs(allVideos);
@@ -3052,6 +3409,8 @@
         const params = new URLSearchParams({
           limit: "40",
           tab: currentGalleryTab,
+          filters: [...activeGalleryFilters].join(","),
+          tag: selectedGalleryTag,
           page: String(galleryPage),
           per_page: "40",
           q: gallerySearchQuery
@@ -3139,9 +3498,12 @@
       loadJobsPanelState();
       await loadPresets();
       restoreGallerySearchBox();
+      updateGalleryFilterButtons();
+      loadCustomTags();
       applyPendingRetryPayload();
       loadQueueFromLocalStorage();
       loadBatchModeFromLocalStorage();
+      loadBatchBase64ImageModeFromLocalStorage();
       renderQueue();
 
       // Draw immediately from server-rendered data, then refresh from /api/videos.
@@ -3151,6 +3513,10 @@
 
       try {
         await refreshOutputs();
+        if (galleryIndexStatus.indexing) {
+          setTimeout(() => refreshOutputs().catch(error => console.warn("Gallery index refresh check failed:", error)), 2500);
+          setTimeout(() => refreshOutputs().catch(error => console.warn("Gallery index refresh check failed:", error)), 7000);
+        }
       } catch (error) {
         console.warn("Initial video refresh failed; using server-rendered videos:", error);
       }

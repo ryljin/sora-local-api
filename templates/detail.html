@@ -277,6 +277,53 @@
       font-size: 12px;
     }
 
+    .tag-chip {
+      display: inline-block;
+      margin-top: 6px;
+      margin-right: 5px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #252525;
+      border: 1px solid #444;
+      color: #ddd;
+      font-size: 12px;
+    }
+
+    .tag-panel {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid #444;
+      border-radius: 10px;
+      background: #151515;
+    }
+
+    .tag-panel.visible {
+      display: block;
+    }
+
+    .tag-checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      color: #ddd;
+      font-size: 14px;
+    }
+
+    .tag-checkbox-row input {
+      width: auto;
+      margin: 0;
+    }
+
+    .tag-create-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      margin-top: 12px;
+    }
+
     @media (max-width: 900px) {
       .two-row,
       .row {
@@ -437,6 +484,19 @@
     <button type="button" id="favoriteButton" class="secondary" onclick="toggleFavorite()">{{ 'Remove favorite' if video.favorite else 'Favorite video' }}</button>
     <button type="button" id="archiveButton" class="secondary" onclick="toggleArchive()">{{ 'Unarchive video' if video.archived else 'Archive video' }}</button>
     <button type="button" id="retryButton" class="secondary" onclick="retryCurrentVideo()">Retry</button>
+    <button type="button" id="tagButton" class="secondary" onclick="toggleTagPanel()">Tags</button>
+  </div>
+
+  <div class="tag-panel" id="tagPanel">
+    <div class="section-heading-row">
+      <h2>Custom Tags</h2>
+      <button type="button" class="copy-button" onclick="saveVideoTags()">Save tags</button>
+    </div>
+    <div id="tagCheckboxList" class="meta">Loading tags...</div>
+    <div class="tag-create-row">
+      <input id="newDetailTagName" type="text" placeholder="New tag name">
+      <button type="button" class="small-button" onclick="createDetailTag()">Create</button>
+    </div>
   </div>
 
   <h1>{{ video.filename }}</h1>
@@ -468,6 +528,7 @@
     <div class="meta">Pinned: <span id="pinnedState">{{ 'yes' if video.pinned else 'no' }}</span></div>
     <div class="meta">Favorite: <span id="favoriteState">{{ 'yes' if video.favorite else 'no' }}</span></div>
     <div class="meta">Archived: <span id="archiveState">{{ 'yes' if video.archived else 'no' }}</span></div>
+    <div class="meta">Tags: <span id="tagState">{% if video.custom_tags %}{% for tag in video.custom_tags %}<span class="tag-chip">{{ tag }}</span>{% endfor %}{% else %}none{% endif %}</span></div>
 
     {% if video.batch_id %}
       <div class="meta">OpenAI Batch ID: {{ video.batch_id }}</div>
@@ -609,6 +670,8 @@
     let currentPinned = {{ 'true' if video.pinned else 'false' }};
     let currentFavorite = {{ 'true' if video.favorite else 'false' }};
     let currentArchived = {{ 'true' if video.archived else 'false' }};
+    let currentTags = Array.isArray({{ (video.custom_tags or [])|tojson }}) ? {{ (video.custom_tags or [])|tojson }} : [];
+    let allTags = [];
     const BUDGET_DRAFT_KEY = "sora_budget_remaining_draft";
     const DETAIL_REMIX_PRESET_KEY = "sora_detail_remix_preset";
     const DETAIL_EXTEND_PRESET_KEY = "sora_detail_extend_preset";
@@ -632,6 +695,123 @@
       }
 
       return "Generate";
+    }
+
+    function renderTagState() {
+      const state = document.getElementById("tagState");
+      if (!state) {
+        return;
+      }
+      state.innerHTML = "";
+      if (!currentTags.length) {
+        state.textContent = "none";
+        return;
+      }
+      currentTags.forEach(tag => {
+        const chip = document.createElement("span");
+        chip.className = "tag-chip";
+        chip.textContent = tag;
+        state.appendChild(chip);
+      });
+    }
+
+    function toggleTagPanel() {
+      const panel = document.getElementById("tagPanel");
+      if (panel) {
+        panel.classList.toggle("visible");
+      }
+      loadVideoTags();
+    }
+
+    function renderTagCheckboxes() {
+      const list = document.getElementById("tagCheckboxList");
+      if (!list) {
+        return;
+      }
+      list.innerHTML = "";
+      if (!allTags.length) {
+        list.innerHTML = `<div class="meta">No custom tags yet. Create one below.</div>`;
+        return;
+      }
+      allTags.forEach(tag => {
+        const label = document.createElement("label");
+        label.className = "tag-checkbox-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = tag;
+        checkbox.checked = currentTags.includes(tag);
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(tag));
+        list.appendChild(label);
+      });
+    }
+
+    async function loadVideoTags() {
+      try {
+        const response = await fetch(`/api/video-tags/${encodeURIComponent(currentFilename)}`, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to load tags.");
+        }
+        currentTags = Array.isArray(data.tags) ? data.tags : [];
+        allTags = Array.isArray(data.all_tags) ? data.all_tags : [];
+        renderTagState();
+        renderTagCheckboxes();
+      } catch (error) {
+        console.warn("Could not load video tags:", error);
+      }
+    }
+
+    async function createDetailTag() {
+      const input = document.getElementById("newDetailTagName");
+      const tag = input ? input.value.trim() : "";
+      if (!tag) {
+        return;
+      }
+      const response = await fetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to create tag.");
+        return;
+      }
+      if (input) {
+        input.value = "";
+      }
+      if (!currentTags.includes(data.tag)) {
+        currentTags.push(data.tag);
+      }
+      allTags = Array.isArray(data.tags) ? data.tags : [...new Set([...allTags, data.tag])];
+      renderTagState();
+      renderTagCheckboxes();
+    }
+
+    async function saveVideoTags() {
+      const list = document.getElementById("tagCheckboxList");
+      const tags = list ? [...list.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value) : currentTags;
+      const response = await fetch("/api/video-tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: currentFilename, tags })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to save tags.");
+        return;
+      }
+      currentTags = Array.isArray(data.tags) ? data.tags : [];
+      allTags = Array.isArray(data.all_tags) ? data.all_tags : allTags;
+      renderTagState();
+      renderTagCheckboxes();
+      const button = document.querySelector('#tagPanel .copy-button');
+      if (button) {
+        const old = button.textContent;
+        button.textContent = "Saved";
+        setTimeout(() => { button.textContent = old; }, 1000);
+      }
     }
 
     function resolutionTier(size) {
@@ -1165,6 +1345,16 @@
         card.appendChild(meta);
         if (imageChip) {
           card.appendChild(imageChip);
+        }
+        if (Array.isArray(video.custom_tags) && video.custom_tags.length) {
+          const tagWrap = document.createElement("div");
+          video.custom_tags.forEach(tag => {
+            const chip = document.createElement("span");
+            chip.className = "tag-chip";
+            chip.textContent = tag;
+            tagWrap.appendChild(chip);
+          });
+          card.appendChild(tagWrap);
         }
         if (video.prompt_preview) {
           card.appendChild(preview);
